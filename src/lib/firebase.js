@@ -1,6 +1,5 @@
 import { initializeApp, getApps } from 'firebase/app';
 import { getAuth, signInAnonymously } from 'firebase/auth';
-import { getDatabase } from 'firebase/database';
 import { getFirestore } from 'firebase/firestore';
 import { getStorage } from 'firebase/storage';
 
@@ -43,21 +42,16 @@ export const ensureFirebaseReady = async () => {
 
 // Master Database is intentionally a separate named Firebase app. The payroll
 // app keeps using the existing Firebase project for its Firestore/Storage data,
-// while the employee directory is read from the HR Realtime Database only when
-// the user presses Sync.
-const masterDatabaseProjectId = import.meta.env.VITE_MASTERDATABASE_PROJECT_ID;
-const masterDatabaseUrl = import.meta.env.VITE_MASTERDATABASE_DATABASE_URL
-  || (masterDatabaseProjectId ? `https://${masterDatabaseProjectId}-default-rtdb.firebaseio.com` : '');
-
+// while the employee directory is read from the HR project's Firestore only
+// when the user presses Sync.
 const masterDatabaseConfig = {
   apiKey: import.meta.env.VITE_MASTERDATABASE_API_KEY,
   authDomain: import.meta.env.VITE_MASTERDATABASE_AUTH_DOMAIN,
-  projectId: masterDatabaseProjectId,
+  projectId: import.meta.env.VITE_MASTERDATABASE_PROJECT_ID,
   storageBucket: import.meta.env.VITE_MASTERDATABASE_STORAGE_BUCKET,
   messagingSenderId: import.meta.env.VITE_MASTERDATABASE_MESSAGING_SENDER_ID,
   appId: import.meta.env.VITE_MASTERDATABASE_APP_ID,
   measurementId: import.meta.env.VITE_MASTERDATABASE_MEASUREMENT_ID,
-  databaseURL: masterDatabaseUrl,
 };
 
 const hasMasterDatabaseConfig = [
@@ -65,7 +59,6 @@ const hasMasterDatabaseConfig = [
   masterDatabaseConfig.authDomain,
   masterDatabaseConfig.projectId,
   masterDatabaseConfig.appId,
-  masterDatabaseConfig.databaseURL,
 ].every(Boolean);
 
 const masterDatabaseApp = hasMasterDatabaseConfig
@@ -73,7 +66,7 @@ const masterDatabaseApp = hasMasterDatabaseConfig
     || initializeApp(masterDatabaseConfig, 'masterDatabase'))
   : null;
 
-export const masterDb = masterDatabaseApp ? getDatabase(masterDatabaseApp, masterDatabaseUrl) : null;
+export const masterDb = masterDatabaseApp ? getFirestore(masterDatabaseApp) : null;
 export const masterAuth = masterDatabaseApp ? getAuth(masterDatabaseApp) : null;
 export const isMasterDatabaseConfigured = Boolean(masterDb);
 
@@ -83,9 +76,9 @@ const masterAnonymousUserPromise = masterAuth
     : signInAnonymously(masterAuth)
       .then(({ user }) => user)
       .catch((error) => {
-        // A public Realtime Database can still be read without auth. If Rules
-        // require auth, the subsequent read will return the useful permission
-        // error to the UI.
+        // Firestore can still be read without auth when its Rules allow it. If
+        // Rules require auth, the subsequent read will return the useful
+        // permission error to the UI.
         console.warn('Master Database anonymous authentication is unavailable; continuing with the configured client.', error);
         return null;
       }))

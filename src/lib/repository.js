@@ -1,6 +1,5 @@
-import { collection, doc, getDocs, onSnapshot, query, setDoc, updateDoc, where, writeBatch } from 'firebase/firestore';
-import { get, ref as databaseRef } from 'firebase/database';
-import { getDownloadURL as getStorageDownloadURL, ref as storageRef, uploadBytes } from 'firebase/storage';
+import { collection, deleteDoc, doc, getDocs, onSnapshot, query, setDoc, updateDoc, where, writeBatch } from 'firebase/firestore';
+import { deleteObject, getDownloadURL as getStorageDownloadURL, ref as storageRef, uploadBytes } from 'firebase/storage';
 import {
   db,
   ensureFirebaseReady,
@@ -16,15 +15,22 @@ export const FIREBASE_ROOT_COLLECTION = 'CMG-Payroll';
 export const FIREBASE_ROOT_DOCUMENT = 'root';
 export const MASTER_DATABASE_EMPLOYEE_PATH = 'CMG-HR-Database/root/employee_data';
 
-const MASTER_EMPLOYEE_FIELDS = ['employeeId', 'firstName', 'lastName', 'department', 'position'];
+const WORKING_STATUS = 'ทำงาน';
+const MASTER_EMPLOYEE_FIELDS = ['employeeId', 'firstName', 'lastName', 'department', 'position', 'project', 'employeeStatus'];
 
 const fieldAliases = {
   employeeId: ['employeeId', 'employee_id', 'employeeCode', 'employee_code', 'code', 'รหัสพนักงาน', 'รหัสพนักงาน '],
-  firstName: ['firstName', 'first_name', 'firstname', 'name', 'ชื่อ', 'ชื่อจริง'],
-  lastName: ['lastName', 'last_name', 'lastname', 'นามสกุล'],
-  department: ['department', 'dept', 'แผนก'],
+  firstName: ['firstName', 'first_name', 'firstname', 'name', 'ชื่อ', 'ชื่อจริง', 'ชื่อตัว'],
+  lastName: ['lastName', 'last_name', 'lastname', 'นามสกุล', 'ชื่อสกุล'],
+  department: ['department', 'dept', 'แผนก', 'ชื่อชุด'],
   position: ['position', 'jobTitle', 'job_title', 'title', 'ตำแหน่ง'],
+  project: ['สถานะโครงการ', 'project'],
+  employeeStatus: ['สถานะพนักงาน', 'employeeStatus'],
 };
+
+const textFromValue = (value) => (Array.isArray(value)
+  ? value.map((item) => String(item ?? '').trim()).filter(Boolean).join(', ')
+  : String(value ?? '').trim());
 
 const unwrapValue = (value) => {
   if (value && typeof value === 'object' && Object.prototype.hasOwnProperty.call(value, 'value')) return value.value;
@@ -41,51 +47,39 @@ const valueFromAliases = (record, aliases) => {
   return '';
 };
 
-const hasEmployeeField = (record) => Object.values(fieldAliases)
-  .some((aliases) => aliases.some((alias) => Object.prototype.hasOwnProperty.call(record || {}, alias)));
-
 const normalizeMasterEmployee = (record, fallbackEmployeeId = '') => {
   const source = record && typeof record === 'object' ? record : {};
   const employeeId = valueFromAliases(source, fieldAliases.employeeId) || fallbackEmployeeId;
   if (employeeId === null || employeeId === undefined || String(employeeId).trim() === '') return null;
 
   return MASTER_EMPLOYEE_FIELDS.reduce((employee, field) => {
-    employee[field] = String(field === 'employeeId'
+    employee[field] = textFromValue(field === 'employeeId'
       ? employeeId
-      : valueFromAliases(source, fieldAliases[field]) || '').trim();
+      : valueFromAliases(source, fieldAliases[field]));
     return employee;
   }, {});
 };
 
-const parseMasterEmployees = (value) => {
-  if (!value || typeof value !== 'object') return [];
+const parseMasterEmployees = (documents) => {
+  const records = documents
+    .map((item) => normalizeMasterEmployee(item.data(), item.id))
+    .filter(Boolean);
 
-  if (hasEmployeeField(value)) {
-    return [normalizeMasterEmployee(value)].filter(Boolean);
-  }
-
-  const entries = Array.isArray(value)
-    ? value.map((record, index) => [String(index), record])
-    : Object.entries(value);
-  const records = entries.flatMap(([key, record]) => {
-    if (record && typeof record === 'object' && hasEmployeeField(record)) {
-      return [normalizeMasterEmployee(record, key)];
-    }
-    return [];
-  }).filter(Boolean);
-
-  // The source can contain both a Firebase key and an employeeId field. Keep
-  // one row per employee so a repeated Sync does not create duplicates.
+  // Keep one row per employee so a repeated Sync does not create duplicates.
   return [...new Map(records.map((employee) => [employee.employeeId, employee])).values()];
 };
 
 const normalizedKey = (value) => String(value || '').trim().toLowerCase();
 
-const inferSheet = (employee, existingRow) => {
-  if (existingRow?.sheet === 'DC' || existingRow?.sheet === 'SUPPLY') return existingRow.sheet;
-  if (/^sp/i.test(employee.employeeId) || /^s(?:ชุด|upply)/i.test(employee.department)) return 'SUPPLY';
-  return 'DC';
+// DC tab takes DC and Intern codes, SUPPLY tab takes SP codes. Any other
+// prefix is not part of the rate tables.
+const sheetForEmployeeId = (employeeId) => {
+  if (/^sp/i.test(employeeId)) return 'SUPPLY';
+  if (/^(?:dc|intern)/i.test(employeeId)) return 'DC';
+  return null;
 };
+
+export const isRowVisible = (row) => !row.employeeStatus || row.employeeStatus === WORKING_STATUS;
 
 const masterRecordId = (sheet, employeeId) => `master-${sheet.toLowerCase()}-${String(employeeId)
   .trim()
@@ -194,6 +188,22 @@ export const saveDatasetRecord = async ({ category, sheet, record, files = [] })
   return { id: saved.id, ...payload };
 };
 
+export const deleteDatasetRecord = async ({ category, record }) => {
+  if (!isFirebaseConfigured) return;
+
+  await ensureFirebaseReady();
+  await deleteDoc(doc(categoryCollection(category), record.id));
+
+  if (!storage || !record.attachments?.length) return;
+  await Promise.all(record.attachments.filter((attachment) => attachment.path).map(async (attachment) => {
+    try {
+      await deleteObject(storageRef(storage, attachment.path));
+    } catch (error) {
+      console.error(`ไม่สามารถลบไฟล์แนบ ${attachment.path}`, error);
+    }
+  }));
+};
+
 export const syncMasterEmployees = async ({ existingRowsBySheet = {} } = {}) => {
   if (!isMasterDatabaseConfigured || !masterDb) {
     const error = new Error('ยังไม่ได้ตั้งค่า Master Database');
@@ -207,8 +217,8 @@ export const syncMasterEmployees = async ({ existingRowsBySheet = {} } = {}) => 
   }
 
   await ensureMasterDatabaseReady();
-  const snapshot = await get(databaseRef(masterDb, MASTER_DATABASE_EMPLOYEE_PATH));
-  const employees = parseMasterEmployees(snapshot.exists() ? snapshot.val() : null);
+  const snapshot = await getDocs(collection(masterDb, MASTER_DATABASE_EMPLOYEE_PATH));
+  const employees = parseMasterEmployees(snapshot.docs);
   const storedRowsSnapshot = await getDocs(categoryCollection('rates'));
   const storedRows = storedRowsSnapshot.docs.map((item) => ({ id: item.id, ...item.data() }));
   const existingRows = [...storedRows, ...Object.values(existingRowsBySheet).flat()];
@@ -226,8 +236,14 @@ export const syncMasterEmployees = async ({ existingRowsBySheet = {} } = {}) => 
   let unchanged = 0;
 
   employees.forEach((employee) => {
+    const sheet = sheetForEmployeeId(employee.employeeId);
+    if (!sheet) return;
+
     const existing = existingByEmployeeId.get(normalizedKey(employee.employeeId));
-    const sheet = inferSheet(employee, existing);
+    // Only working employees are imported. A stored row whose status changed is
+    // still updated so the table hides it instead of showing a stale status.
+    if (!existing && employee.employeeStatus !== WORKING_STATUS) return;
+
     const id = existing?.id || masterRecordId(sheet, employee.employeeId);
     const syncedRow = {
       ...(existing || {}),
@@ -261,7 +277,7 @@ export const syncMasterEmployees = async ({ existingRowsBySheet = {} } = {}) => 
   }
 
   return {
-    total: employees.length,
+    total: syncedRows.length,
     created,
     updated,
     unchanged,

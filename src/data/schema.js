@@ -45,6 +45,7 @@ const rateColumns = [
   { key: 'lastName', label: 'นามสกุล', type: 'text' },
   { key: 'department', label: 'แผนก', type: 'text' },
   { key: 'position', label: 'ตำแหน่ง', type: 'text' },
+  { key: 'project', label: 'โครงการ', type: 'text', editable: false },
   { key: 'dailyRateYear69', label: 'ค่าแรงปี 69', type: 'currency' },
   { key: 'travelRate', label: 'อัตราค่าเดินทาง', type: 'mixed' },
   { key: 'positionAllowance', label: 'อัตราค่าตำแหน่ง', type: 'currency' },

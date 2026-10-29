@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from 'react';
 import { formatCell, formatCurrency, menuItems, sourceCatalog } from './data/schema';
 import { isFirebaseConfigured, isMasterDatabaseConfigured } from './lib/firebase';
-import { saveDatasetRecord, subscribeToDataset, syncMasterEmployees } from './lib/repository';
+import { deleteDatasetRecord, isRowVisible, saveDatasetRecord, subscribeToDataset, syncMasterEmployees } from './lib/repository';
 import './styles.css';
 
 const emptyDataset = { payroll: {}, rates: {} };
@@ -30,6 +30,7 @@ function App() {
   const [toast, setToast] = useState('');
   const [firebaseError, setFirebaseError] = useState('');
   const [syncingRates, setSyncingRates] = useState(false);
+  const [deleteTarget, setDeleteTarget] = useState(null);
 
   useEffect(() => {
     const unsubscribers = [];
@@ -60,7 +61,7 @@ function App() {
   }, [toast]);
 
   const payrollRows = Object.values(datasets.payroll).flat();
-  const rateRows = Object.values(datasets.rates).flat();
+  const rateRows = Object.values(datasets.rates).flat().filter(isRowVisible);
   const totalPayroll = payrollRows.reduce((sum, row) => sum + Number(row.netTotal || 0), 0);
   const activeMenuItem = menuItems.find((item) => item.id === activeMenu) || menuItems[0];
 
@@ -98,6 +99,28 @@ function App() {
         ? 'บันทึกไม่สำเร็จ: Firebase ปฏิเสธสิทธิ์'
         : 'บันทึกไม่สำเร็จ กรุณาตรวจสอบการเชื่อมต่อ');
       return false;
+    }
+  };
+
+  const deleteRecord = async () => {
+    const { category, sheet, row } = deleteTarget;
+    try {
+      await deleteDatasetRecord({ category, record: row });
+      setDatasets((current) => ({
+        ...current,
+        [category]: {
+          ...current[category],
+          [sheet]: (current[category][sheet] || []).filter((item) => item.id !== row.id),
+        },
+      }));
+      setDeleteTarget(null);
+      setFirebaseError('');
+      setToast('ลบรายการแล้ว');
+    } catch (error) {
+      console.error('ไม่สามารถลบข้อมูลจาก Firebase', error);
+      setToast(error?.code === 'permission-denied'
+        ? 'ลบไม่สำเร็จ: Firebase ปฏิเสธสิทธิ์'
+        : 'ลบไม่สำเร็จ กรุณาตรวจสอบการเชื่อมต่อ');
     }
   };
 
@@ -193,11 +216,12 @@ function App() {
             category={activeMenu}
             sheet={activeTabs[activeMenu]}
             onSheetChange={(sheet) => setActiveTabs((tabs) => ({ ...tabs, [activeMenu]: sheet }))}
-            rows={datasets[activeMenu][activeTabs[activeMenu]] || []}
+            rows={(datasets[activeMenu][activeTabs[activeMenu]] || []).filter(activeMenu === 'rates' ? isRowVisible : () => true)}
             search={search}
             setSearch={setSearch}
             onAdd={() => openEditor(activeMenu, activeTabs[activeMenu])}
             onEdit={(row) => openEditor(activeMenu, activeTabs[activeMenu], row)}
+            onDelete={activeMenu === 'rates' ? (row) => setDeleteTarget({ category: activeMenu, sheet: activeTabs[activeMenu], row }) : undefined}
             onSync={activeMenu === 'rates' ? syncRates : undefined}
             syncing={syncingRates}
             canSyncMaster={isMasterDatabaseConfigured}
@@ -212,6 +236,13 @@ function App() {
           record={editor.row}
           onClose={() => setEditor(null)}
           onSave={saveRecord}
+        />
+      )}
+      {deleteTarget && (
+        <ConfirmDelete
+          row={deleteTarget.row}
+          onClose={() => setDeleteTarget(null)}
+          onConfirm={deleteRecord}
         />
       )}
       {toast && <div className="toast">{toast}</div>}
@@ -273,7 +304,7 @@ function MetricCard({ label, value, detail, accent }) {
   return <div className={`metric-card ${accent}`}><div className="metric-icon">{accent === 'orange' ? '฿' : accent === 'blue' ? '▣' : accent === 'green' ? '♙' : '⊞'}</div><div><div className="metric-label">{label}</div><div className="metric-value">{value}</div><div className="metric-detail">{detail}</div></div></div>;
 }
 
-function DatasetView({ category, sheet, onSheetChange, rows, search, setSearch, onAdd, onEdit, onSync, syncing, canSyncMaster }) {
+function DatasetView({ category, sheet, onSheetChange, rows, search, setSearch, onAdd, onEdit, onDelete, onSync, syncing, canSyncMaster }) {
   const config = sourceCatalog[category];
   const tab = config.tabs[sheet];
   const sourceLabel = category === 'rates' ? 'แหล่งข้อมูล Master Database' : 'โครงสร้างจากไฟล์';
@@ -284,11 +315,18 @@ function DatasetView({ category, sheet, onSheetChange, rows, search, setSearch, 
     if (!normalized) return rows;
     return rows.filter((row) => Object.values(row).some((value) => String(value ?? '').toLowerCase().includes(normalized)));
   }, [rows, search]);
+  const sourceBanner = <div className="source-banner"><span className="source-file-icon">▤</span><div><span className="source-label">{sourceLabel}</span><strong>{sourceName}</strong></div><span className="source-meta">{sourceMeta}</span></div>;
 
   return (
     <div className="page-content dataset-page">
-      <section className="page-heading-row"><div><div className="eyebrow">{category === 'payroll' ? 'PAYROLL PERIODS' : 'EMPLOYEE RATE MASTER'}</div><h1>{config.label}</h1><p className="page-description">{tab.description}</p></div><div className="page-heading-actions">{onSync && <button className="sync-button" onClick={onSync} disabled={syncing} title={canSyncMaster ? 'ดึงข้อมูลพนักงานจาก Master Database' : 'กรุณาตั้งค่า Master Database ในไฟล์ .env'}><span>↻</span> {syncing ? 'กำลัง Sync...' : 'Sync ข้อมูล'}</button>}<button className="primary-button" onClick={onAdd}><span>＋</span> เพิ่มรายการ</button></div></section>
-      <div className="source-banner"><span className="source-file-icon">▤</span><div><span className="source-label">{sourceLabel}</span><strong>{sourceName}</strong></div><span className="source-meta">{sourceMeta}</span></div>
+      {category === 'rates' ? (
+        <section className="page-heading-row source-row">{sourceBanner}{onSync && <button className="sync-button" onClick={onSync} disabled={syncing} title={canSyncMaster ? 'ดึงข้อมูลพนักงานจาก Master Database' : 'กรุณาตั้งค่า Master Database ในไฟล์ .env'}><span>↻</span> {syncing ? 'กำลัง Sync...' : 'Sync ข้อมูล'}</button>}</section>
+      ) : (
+        <>
+          <section className="page-heading-row"><div><div className="eyebrow">PAYROLL PERIODS</div><h1>{config.label}</h1><p className="page-description">{tab.description}</p></div><div className="page-heading-actions"><button className="primary-button" onClick={onAdd}><span>＋</span> เพิ่มรายการ</button></div></section>
+          {sourceBanner}
+        </>
+      )}
 
       <div className="tabs" role="tablist" aria-label={`แท็บ${config.label}`}>
         {Object.entries(config.tabs).map(([tabId, item]) => <button key={tabId} role="tab" aria-selected={sheet === tabId} className={`tab-button ${sheet === tabId ? 'active' : ''}`} onClick={() => { onSheetChange(tabId); setSearch(''); }}>{item.label}<span className="tab-count">{tabId === sheet ? rows.length : '·'}</span></button>)}
@@ -297,16 +335,45 @@ function DatasetView({ category, sheet, onSheetChange, rows, search, setSearch, 
       <section className="data-panel">
         <div className="data-panel-toolbar"><div><h2>{tab.label}</h2><p>หัวตารางตรงตามชีตต้นแบบ แถวข้อมูลเริ่มที่แถว {tab.dataStartRow}</p></div><div className="toolbar-controls"><div className="search-box"><span>⌕</span><input value={search} onChange={(event) => setSearch(event.target.value)} placeholder="ค้นหาพนักงานหรือข้อมูล..." /></div><button className="filter-button">≡ <span>ตัวกรอง</span></button></div></div>
         <div className="table-summary"><span>แสดง <strong>{filteredRows.length}</strong> จาก {rows.length} รายการ</span><span className="calculated-note"><i /> ช่องสีเทาคือค่าคำนวณจากระบบ</span></div>
-        <div className="table-scroll"><DataTable columns={tab.columns} rows={filteredRows} sheet={sheet} onEdit={onEdit} /></div>
+        <div className="table-scroll"><DataTable columns={tab.columns} rows={filteredRows} sheet={sheet} onEdit={onEdit} onDelete={onDelete} /></div>
         <div className="data-panel-footer"><span>แหล่งข้อมูล: {sourceName} / ชีต {tab.sourceSheet.trim()}</span><span>อัปเดตล่าสุด: {isFirebaseConfigured ? 'Firebase' : 'ข้อมูลตัวอย่าง'}</span></div>
       </section>
     </div>
   );
 }
 
-function DataTable({ sheet, columns, rows, onEdit }) {
+function DataTable({ sheet, columns, rows, onEdit, onDelete }) {
   return (
-    <table className="data-table"><thead><tr>{columns.map((column) => <th key={column.key} className={!column.editable && column.editable !== undefined ? 'calculated-header' : ''}>{column.label}</th>)}<th className="action-header">จัดการ</th></tr></thead><tbody>{rows.length ? rows.map((row) => <tr key={row.id || `${sheet}-${row.sequence}-${row.employeeId}`} onDoubleClick={() => onEdit(row)}>{columns.map((column) => <td key={column.key} className={!column.editable && column.editable !== undefined ? 'calculated-cell' : ''}>{column.key === 'employeeId' ? <strong className="employee-code">{formatCell(row[column.key], column.type)}</strong> : column.key === 'netTotal' || column.key === 'dailyRateYear69' ? <strong>{formatCell(row[column.key], column.type)}</strong> : formatCell(row[column.key], column.type)}</td>)}<td className="action-cell"><button className="row-edit-button" onClick={() => onEdit(row)}>แก้ไข</button></td></tr>) : <tr><td colSpan={columns.length + 1} className="empty-state"><span className="empty-icon">⌁</span><strong>ยังไม่มีข้อมูลในแท็บนี้</strong><span>กด “เพิ่มรายการ” เพื่อเริ่มบันทึกข้อมูล</span></td></tr>}</tbody></table>
+    <table className="data-table"><thead><tr>{columns.map((column) => <th key={column.key} className={!column.editable && column.editable !== undefined ? 'calculated-header' : ''}>{column.label}</th>)}<th className="action-header">จัดการ</th></tr></thead><tbody>{rows.length ? rows.map((row) => <tr key={row.id || `${sheet}-${row.sequence}-${row.employeeId}`} onDoubleClick={() => onEdit(row)}>{columns.map((column) => <td key={column.key} className={[!column.editable && column.editable !== undefined ? 'calculated-cell' : '', column.key === 'firstName' || column.key === 'lastName' ? 'name-cell' : ''].filter(Boolean).join(' ')}>{column.key === 'employeeId' ? <strong className="employee-code">{formatCell(row[column.key], column.type)}</strong> : column.key === 'netTotal' || column.key === 'dailyRateYear69' ? <strong>{formatCell(row[column.key], column.type)}</strong> : formatCell(row[column.key], column.type)}</td>)}<td className="action-cell"><button className="row-edit-button" onClick={() => onEdit(row)}>แก้ไข</button>{onDelete && <button className="row-delete-button" onClick={() => onDelete(row)}>ลบ</button>}</td></tr>) : <tr><td colSpan={columns.length + 1} className="empty-state"><span className="empty-icon">⌁</span><strong>ยังไม่มีข้อมูลในแท็บนี้</strong><span>กด “เพิ่มรายการ” เพื่อเริ่มบันทึกข้อมูล</span></td></tr>}</tbody></table>
+  );
+}
+
+function ConfirmDelete({ row, onClose, onConfirm }) {
+  const [deleting, setDeleting] = useState(false);
+  const name = [row.firstName, row.lastName].filter(Boolean).join(' ');
+
+  const handleConfirm = async () => {
+    setDeleting(true);
+    try {
+      await onConfirm();
+    } finally {
+      setDeleting(false);
+    }
+  };
+
+  return (
+    <div className="modal-backdrop" onMouseDown={(event) => event.target === event.currentTarget && !deleting && onClose()}>
+      <section className="editor-modal confirm-modal" role="alertdialog" aria-modal="true" aria-labelledby="confirm-title">
+        <div className="modal-header">
+          <div><div className="eyebrow">อัตราค่าแรง</div><h2 id="confirm-title">ลบรายการนี้?</h2></div>
+        </div>
+        <p className="confirm-text">ต้องการลบ <strong>{[row.employeeId, name].filter(Boolean).join(' · ') || 'รายการนี้'}</strong> ออกจากตารางอัตราค่าแรง การลบไม่สามารถกู้คืนได้</p>
+        <div className="modal-footer">
+          <button className="secondary-button" onClick={onClose} disabled={deleting}>ยกเลิก</button>
+          <button className="danger-button" onClick={handleConfirm} disabled={deleting}>{deleting ? 'กำลังลบ...' : 'ลบรายการ'}</button>
+        </div>
+      </section>
+    </div>
   );
 }
 

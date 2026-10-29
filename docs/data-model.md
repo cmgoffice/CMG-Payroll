@@ -98,13 +98,15 @@ CMG-Payroll/root/{category}/{sheet}/{documentId}/{timestamp}-{fileName}
 
 ## Master Database: ทะเบียนพนักงาน
 
-ปุ่ม `Sync ข้อมูล` ในเมนู `อัตราค่าแรง` อ่าน Firebase Realtime Database จาก:
+ปุ่ม `Sync ข้อมูล` ในเมนู `อัตราค่าแรง` อ่าน Firestore ของโปรเจกต์ Master Database จาก collection:
 
 ```text
 CMG-HR-Database/root/employee_data
 ```
 
-ข้อมูลต้นทางที่นำเข้า ได้แก่ `employeeId`, `firstName`, `lastName`, `department` และ `position` (รองรับชื่อฟิลด์ภาษาไทยตามหัวตารางด้วย) แล้ว upsert เข้า `CMG-Payroll/root/rates` โดยใช้ `employeeId` เป็นตัวจับคู่ ฟิลด์อัตราค่าแรงและสวัสดิการเดิมจะไม่ถูกลบทับเมื่อ Sync
+ข้อมูลต้นทางที่นำเข้า ได้แก่ `employeeId` (`รหัสพนักงาน`), `firstName` (`ชื่อตัว`), `lastName` (`ชื่อสกุล`), `department` (`ชื่อชุด`), `position` (`ตำแหน่ง`), `project` (`สถานะโครงการ` ซึ่งเป็นรายการ นำมาต่อกันด้วย `, `) และ `employeeStatus` (`สถานะพนักงาน`) แล้ว upsert เข้า `CMG-Payroll/root/rates` โดยใช้ `employeeId` เป็นตัวจับคู่ ฟิลด์อัตราค่าแรงและสวัสดิการเดิมจะไม่ถูกลบทับเมื่อ Sync
+
+กติกาแยกแท็บ: รหัสขึ้นต้น `DC` และ `Intern` ไปแท็บ `DC`, รหัสขึ้นต้น `SP` ไปแท็บ `SUPPLY`, รหัสอื่นไม่นำเข้า นำเข้าเฉพาะ `employeeStatus = ทำงาน` และแถวที่สถานะไม่ใช่ `ทำงาน` จะถูกซ่อนในตาราง
 
 ## Collections ที่แนะนำสำหรับเฟสถัดไป
 
