@@ -21,23 +21,13 @@ export const storage = app ? getStorage(app) : null;
 export const auth = app ? getAuth(app) : null;
 export const isFirebaseConfigured = Boolean(db && storage);
 
-// Anonymous authentication keeps every user in the same shared Firestore and
-// Storage paths. The UID is intentionally never used as a folder or document
-// path; it only allows Firebase Rules to recognize an authenticated client.
-const anonymousUserPromise = auth
-  ? (auth.currentUser
-    ? Promise.resolve(auth.currentUser)
-    : signInAnonymously(auth)
-      .then(({ user }) => user)
-      .catch((error) => {
-        console.warn('Anonymous Firebase authentication is unavailable; continuing with the configured client.', error);
-        return null;
-      }))
-  : Promise.resolve(null);
-
+// Users now sign in with a real account (see src/auth). Data access waits for
+// Firebase Auth to finish restoring the persisted session so Firestore Rules see
+// the signed-in user instead of an unauthenticated client.
 export const ensureFirebaseReady = async () => {
-  if (!isFirebaseConfigured) return null;
-  return anonymousUserPromise;
+  if (!isFirebaseConfigured || !auth) return null;
+  await auth.authStateReady();
+  return auth.currentUser;
 };
 
 // Master Database is intentionally a separate named Firebase app. The payroll

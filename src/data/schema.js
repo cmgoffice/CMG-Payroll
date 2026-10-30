@@ -10,19 +10,11 @@ const commonPayrollColumns = [
   { key: 'overtime2Sunday', label: 'OT 2 อาทิตย์', type: 'number' },
   { key: 'overtime2Holiday', label: 'OT 2 วันหยุด', type: 'number' },
   { key: 'holidayHours', label: 'OT ชม.วันหยุด', type: 'number' },
-  { key: 'travelFormula', label: 'สูตรคิดค่าเดินทาง', type: 'number', editable: false },
   { key: 'dailyRate', label: 'อัตราค่าแรง', type: 'currency', editable: false },
   { key: 'travelRate', label: 'ค่าเดินทาง', type: 'mixed', editable: false },
   { key: 'positionAllowance', label: 'ค่าตำแหน่ง', type: 'currency', editable: false },
   { key: 'phoneAllowance', label: 'ค่าโทรศัพท์', type: 'currency', editable: false },
   { key: 'overtimeRate15', label: 'อัตรา OT 1.5', type: 'currency', editable: false },
-  { key: 'regularWage', label: 'ค่าแรงปกติ', type: 'currency', editable: false },
-  { key: 'overtime15Amount', label: 'ยอด OT 1.5', type: 'currency', editable: false },
-  { key: 'overtime2SundayAmount', label: 'ยอด OT 2 วันอาทิตย์', type: 'currency', editable: false },
-  { key: 'overtime2HolidayAmount', label: 'ยอด OT 2 วันหยุด', type: 'currency', editable: false },
-  { key: 'holidayHoursAmount', label: 'ยอด OT ชม.วันหยุด', type: 'currency', editable: false },
-  { key: 'positionPhoneTotal', label: 'ค่าตำแหน่ง/โทรศัพท์', type: 'currency', editable: false },
-  { key: 'travelAmount', label: 'ยอดค่าเดินทาง', type: 'currency', editable: false },
   { key: 'contractWork', label: 'งานเหมา', type: 'currency' },
   { key: 'wageDrop', label: 'ค่าแรงตก', type: 'currency' },
   { key: 'deduction', label: 'หักเงิน', type: 'currency' },
@@ -44,11 +36,17 @@ const rateColumns = [
   { key: 'firstName', label: 'ชื่อ', type: 'text' },
   { key: 'lastName', label: 'นามสกุล', type: 'text' },
   { key: 'department', label: 'แผนก', type: 'text' },
+  { key: 'teamName', label: 'ชื่อชุด', type: 'text', editable: false },
   { key: 'position', label: 'ตำแหน่ง', type: 'text' },
   { key: 'project', label: 'โครงการ', type: 'text', editable: false },
   { key: 'dailyRateYear69', label: 'ค่าแรงปี 69', type: 'currency' },
   { key: 'travelRate', label: 'อัตราค่าเดินทาง', type: 'mixed' },
-  { key: 'positionAllowance', label: 'อัตราค่าตำแหน่ง', type: 'currency' },
+  {
+    key: 'specialPosition',
+    label: 'ตำแหน่งพิเศษ',
+    type: 'special-position',
+    amountKey: 'specialPositionAmount',
+  },
   { key: 'phoneAllowance', label: 'ค่าโทรศัพท์', type: 'currency' },
   { key: 'welfareSupport', label: 'สวัสดิการช่วยเหลือ', type: 'currency' },
   { key: 'status', label: 'สถานะ', type: 'text' },
@@ -56,10 +54,26 @@ const rateColumns = [
 
 const supplyRateColumns = rateColumns.filter((column) => !['phoneAllowance', 'welfareSupport'].includes(column.key));
 
+// The rate workbook used by the payroll team has a compact, fixed layout. Keep
+// Keep the workbook layout in the same order as the source Excel file.
+export const rateSpreadsheetColumns = [
+  { key: 'employeeId', label: 'รหัสพนักงาน', type: 'text' },
+  { key: 'firstName', label: 'ชื่อ', type: 'text' },
+  { key: 'lastName', label: 'นามสกุล', type: 'text' },
+  { key: 'department', label: 'แผนก', type: 'text' },
+  { key: 'position', label: 'ตำแหน่ง', type: 'text' },
+  { key: 'dailyRateYear69', label: 'ค่าแรงปี69', type: 'currency' },
+  { key: 'travelRate', label: 'อัตราค่าเดินทาง', type: 'mixed' },
+  { key: 'specialPosition', label: 'ตำแหน่งพิเศษ', type: 'text' },
+  { key: 'specialPositionAmount', label: 'ค่าแรงตำแหน่งพิเศษ', type: 'currency' },
+  { key: 'phoneAllowance', label: 'ค่าโทรศัพท์', type: 'currency' },
+  { key: 'welfareSupport', label: 'สวัสดิการช่วยเหลือ', type: 'currency' },
+];
+
 export const sourceCatalog = {
   payroll: {
     id: 'payroll',
-    label: 'ค่าแรงรายงวด',
+    label: 'สรุปค่าแรง',
     sourceFile: 'ไฟล์ค่าแรง มีวันหยุด ปี 2569.xlsx',
     collection: 'CMG-Payroll/root/payroll',
     tabs: {
@@ -121,16 +135,23 @@ export const sourceCatalog = {
 };
 
 export const menuItems = [
+  { id: 'projects', label: 'โครงการ', shortLabel: 'โครงการ' },
   { id: 'rates', label: 'อัตราค่าแรง', shortLabel: 'อัตรา' },
-  { id: 'payroll', label: 'ค่าแรงรายงวด', shortLabel: 'ค่าแรง' },
+  { id: 'payroll', label: 'สรุปค่าแรง', shortLabel: 'ค่าแรง' },
+  { id: 'adminWage', label: 'Admin ลงค่าแรง', shortLabel: 'ลงค่าแรง' },
   { id: 'overview', label: 'ภาพรวม', shortLabel: 'ภาพรวม' },
 ];
+
+// Shown at the bottom-left of the sidebar and only for MasterAdmin.
+export const usersMenuItem = { id: 'users', label: 'จัดการผู้ใช้งาน', shortLabel: 'ผู้ใช้งาน' };
+
+const thaiNumberFormatter = new Intl.NumberFormat('th-TH', { maximumFractionDigits: 2 });
 
 export const formatCurrency = (value) => {
   if (value === null || value === undefined || value === '') return '-';
   const number = Number(value);
   if (Number.isNaN(number)) return String(value);
-  return new Intl.NumberFormat('th-TH', { maximumFractionDigits: 2 }).format(number);
+  return thaiNumberFormatter.format(number);
 };
 
 export const formatCell = (value, type = 'text') => {
@@ -138,4 +159,32 @@ export const formatCell = (value, type = 'text') => {
   if (type === 'currency') return formatCurrency(value);
   if (type === 'number') return formatCurrency(value);
   return String(value);
+};
+
+export const isCampTravel = (value) => {
+  const normalized = String(value ?? '').trim().toLowerCase().replace(/\s+/g, '');
+  return normalized.includes('พักแคม') || normalized.includes('พักแค้ม') || normalized.includes('camp');
+};
+
+export const effectiveTravelAmount = (row = {}) => (
+  isCampTravel(row.travelRate) ? 0 : Number(row.travelAmount || 0)
+);
+
+export const effectiveNetTotal = (row = {}) => {
+  const storedTotal = Number(row.netTotal || 0);
+  if (!isCampTravel(row.travelRate) || row.netTotal === undefined || row.netTotal === '') return storedTotal;
+
+  // If an old/imported row already included a travel amount, remove it from
+  // the displayed/calculated total when the employee stays at camp.
+  return storedTotal - Number(row.travelAmount || 0);
+};
+
+export const isNameRecentlyChanged = (row = {}, field, now = Date.now()) => {
+  if (!['firstName', 'lastName'].includes(field)) return false;
+  const changedAt = Date.parse(row.nameChangedAt || '');
+  const age = now - changedAt;
+  if (!Number.isFinite(changedAt) || age < 0 || age >= 24 * 60 * 60 * 1000) return false;
+  return !Array.isArray(row.nameChangedFields)
+    || row.nameChangedFields.length === 0
+    || row.nameChangedFields.includes(field);
 };

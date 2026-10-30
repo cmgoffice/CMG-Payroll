@@ -1,0 +1,65 @@
+rules_version = '2';
+// Reference rules for the sign-in / project-assignment model. Review before deploying.
+service cloud.firestore {
+  match /databases/{database}/documents {
+    function signedIn() { return request.auth != null && request.auth.token.email != null; }
+    function myEmail() { return request.auth.token.email.lower(); }
+    function me() { return get(/databases/$(database)/documents/CMG-Payroll/root/users/$(myEmail())).data; }
+    function hasProfile() { return exists(/databases/$(database)/documents/CMG-Payroll/root/users/$(myEmail())); }
+    function approved() { return signedIn() && hasProfile() && me().status == 'approved'; }
+    function isMaster() { return approved() && 'MasterAdmin' in me().role; }
+    function hasRole(role) { return isMaster() || (approved() && role in me().role); }
+    function assigned(projectId) { return isMaster() || (approved() && projectId in me().assignedProjects); }
+    function appMetaOpen() {
+      let meta = /databases/$(database)/documents/CMG-Payroll/root/appMeta/config;
+      return !exists(meta) || !get(meta).data.firstUserRegistered;
+    }
+
+    // Users: `CMG-Payroll/root/users/{email}`
+    match /CMG-Payroll/root/users/{email} {
+      allow read: if signedIn() && (email == myEmail() || isMaster());
+      // Self-registration: pending Staff, except the very first user (MasterAdmin).
+      allow create: if signedIn() && email == myEmail()
+        && request.resource.data.uid == request.auth.uid
+        && ((request.resource.data.isFirstUser == false
+              && request.resource.data.status == 'pending'
+              && request.resource.data.role == ['Staff']
+              && request.resource.data.assignedProjects == [])
+            || (request.resource.data.isFirstUser == true && appMetaOpen()
+              && request.resource.data.status == 'approved'
+              && request.resource.data.role == ['MasterAdmin']));
+      // Users edit only their own display fields; MasterAdmin edits everything.
+      allow update: if isMaster()
+        || (signedIn() && email == myEmail()
+            && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['firstName', 'lastName', 'position', 'photoURL']));
+    }
+
+    match /CMG-Payroll/root/appMeta/config {
+      allow read: if signedIn();
+      allow create: if signedIn() && appMetaOpen();
+      allow update: if signedIn();
+    }
+
+    match /CMG-Payroll/root/activityLogs/{logId} {
+      allow create: if signedIn();
+      allow read: if isMaster();
+    }
+
+    // Projects and everything stored under them (rates, payroll, settings, payrollPeriods...)
+    match /CMG-Payroll/root/projects/{projectId} {
+      allow read: if assigned(projectId);
+      allow create, update, delete: if isMaster();
+
+      match /rates/{doc=**} { allow read: if assigned(projectId); allow write: if hasRole('RateAdmin'); }
+      match /settings/{doc=**} { allow read: if assigned(projectId); allow write: if hasRole('RateAdmin') || hasRole('PayrollAdmin'); }
+      match /payroll/{doc=**} { allow read: if assigned(projectId); allow write: if hasRole('PayrollAdmin') || hasRole('WageEntry'); }
+      match /payrollPeriods/{doc=**} { allow read: if assigned(projectId); allow write: if hasRole('PayrollAdmin') || hasRole('WageEntry'); }
+      match /deletedPayrollPeriods/{doc=**} { allow read: if assigned(projectId); allow write: if hasRole('PayrollAdmin'); }
+    }
+
+    // Legacy (pre-project) data: readable by MasterAdmin so it can be copied into a project.
+    match /CMG-Payroll/root/{legacy}/{doc=**} {
+      allow read: if isMaster() && legacy in ['rates', 'payroll', 'settings', 'payrollPeriods'];
+    }
+  }
+}

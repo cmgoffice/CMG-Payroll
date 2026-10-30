@@ -1,3 +1,5 @@
+import { isCampTravel } from './schema';
+
 const payrollRow = (values) => ({
   id: values.id,
   sheet: values.sheet,
@@ -24,7 +26,7 @@ const payrollRow = (values) => ({
   overtime2HolidayAmount: values.overtime2HolidayAmount ?? 0,
   holidayHoursAmount: values.holidayHoursAmount ?? 0,
   positionPhoneTotal: values.positionPhoneTotal ?? (values.positionAllowance ?? 0) + (values.phoneAllowance ?? 0),
-  travelAmount: values.travelAmount ?? 0,
+  travelAmount: isCampTravel(values.travelRate) ? 0 : (values.travelAmount ?? 0),
   contractWork: values.contractWork ?? 0,
   wageDrop: values.wageDrop ?? 0,
   deduction: values.deduction ?? 0,
