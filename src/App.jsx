@@ -15,6 +15,7 @@ import { subscribeToBiotimeAttendance } from './lib/biotime';
 import { buildEmployeeReport } from './lib/biotimeReport';
 import './styles.css';
 import './auth/auth.css';
+import './theme-ocean.css';
 
 // Spreadsheet tooling is only needed when the user imports/exports a file.
 // Keep the large XLSX dependency out of the initial payroll screen bundle.
@@ -615,6 +616,7 @@ function Workspace() {
   const [users, setUsers] = useState(EMPTY_LIST);
   const [usersLoaded, setUsersLoaded] = useState(false);
   const [profileOpen, setProfileOpen] = useState(false);
+  const [navOpen, setNavOpen] = useState(false);
   const [activeMenu, setActiveMenu] = useState(() => menuIdFromPath(window.location.pathname));
   const [activeTabs, setActiveTabs] = useState({ payroll: 'DC', rates: 'DC' });
   const [datasets, setDatasets] = useState(emptyDataset);
@@ -882,6 +884,7 @@ function Workspace() {
       window.history.pushState({ menu: nextMenu }, '', nextPath);
     }
     setActiveMenu(nextMenu);
+    setNavOpen(false);
     setSearch('');
     setPayrollAddSheet(null);
     if (nextMenu === 'payroll') setPayrollView('list');
@@ -1363,14 +1366,14 @@ function Workspace() {
     <a key={item.id} href={pathForMenu(item.id)} className={`nav-item ${activeMenu === item.id ? 'active' : ''}`} onClick={(event) => { event.preventDefault(); selectMenu(item.id); }} aria-current={activeMenu === item.id ? 'page' : undefined}>
       <span className="nav-icon">{iconForMenu[item.id]}</span>
       <span>{item.label}</span>
-      {sourceCatalog[item.id] && <span className="nav-count">{Object.keys(sourceCatalog[item.id].tabs).length}</span>}
     </a>
   );
 
   const connectionLabel = firebaseError || (isFirebaseConfigured ? 'Firebase พร้อมใช้งาน' : 'โหมดตัวอย่าง');
 
   return (
-    <div className="app-shell">
+    <div className={`app-shell ${navOpen ? 'nav-open' : ''}`}>
+      <div className="sidebar-backdrop" onClick={() => setNavOpen(false)} aria-hidden="true" />
       <aside className="sidebar">
         <SidebarProfileCard />
         <div className="brand-lockup">
@@ -1422,6 +1425,7 @@ function Workspace() {
 
       <main className="main-content">
         <header className="topbar">
+          <button type="button" className="nav-toggle" aria-label="เปิดเมนู" aria-expanded={navOpen} onClick={() => setNavOpen((open) => !open)}><span /><span /><span /></button>
           <div className="breadcrumb"><span>CMG Payroll</span><span className="breadcrumb-separator">/</span><strong>{activeMenuItem.label}</strong></div>
           <div className="topbar-actions">
             <span className={`connection-pill ${isFirebaseConfigured ? 'connected' : ''} ${firebaseError ? 'error' : ''}`}><span className="status-dot" />{connectionLabel}</span>
@@ -1708,7 +1712,9 @@ function DatasetView({ biotimeEmployees = EMPTY_LIST, onBack, category, sheet, o
   }, [currentPage, filteredRows]);
   const pageStart = filteredRows.length ? (currentPage - 1) * TABLE_PAGE_SIZE + 1 : 0;
   const pageEnd = Math.min(currentPage * TABLE_PAGE_SIZE, filteredRows.length);
-  const sourceBanner = <div className="source-banner"><span className="source-file-icon">▤</span><div><span className="source-label">{sourceLabel}</span><strong>{sourceName}</strong></div><span className="source-meta">{sourceMeta}</span></div>;
+  const sourceBanner = category === 'rates'
+    ? <div className="source-banner"><span className="source-file-icon">▤</span><div><span className="source-label">{sourceLabel}</span><strong>{sourceName}</strong></div><span className="source-meta">{sourceMeta}</span></div>
+    : <div className="source-banner"><span className="source-meta" style={{ marginLeft: 'auto' }}>{sourceMeta}</span></div>;
 
   useEffect(() => {
     const interval = window.setInterval(() => setClock(Date.now()), 60 * 1000);
@@ -2348,6 +2354,70 @@ function findOverlappingPeriod(periods, startDate, endDate) {
   return (periods || []).find((item) => item.startDate && item.endDate && startDate <= item.endDate && endDate >= item.startDate) || null;
 }
 
+const THAI_MONTHS = ['มกราคม', 'กุมภาพันธ์', 'มีนาคม', 'เมษายน', 'พฤษภาคม', 'มิถุนายน', 'กรกฎาคม', 'สิงหาคม', 'กันยายน', 'ตุลาคม', 'พฤศจิกายน', 'ธันวาคม'];
+const WEEKDAY_LABELS = ['อา', 'จ', 'อ', 'พ', 'พฤ', 'ศ', 'ส'];
+const toIsoDate = (y, m, d) => `${y}-${String(m + 1).padStart(2, '0')}-${String(d).padStart(2, '0')}`;
+
+// Calendar input that greys out (and blocks) days covered by already-opened periods.
+function PeriodDatePicker({ value, onChange, periods, min, max, autoFocus }) {
+  const [open, setOpen] = useState(false);
+  const todayIso = useMemo(() => { const t = new Date(); return toIsoDate(t.getFullYear(), t.getMonth(), t.getDate()); }, []);
+  const [view, setView] = useState(() => { const base = value ? new Date(`${value}T00:00:00`) : new Date(); return { y: base.getFullYear(), m: base.getMonth() }; });
+  const wrapRef = useRef(null);
+
+  useEffect(() => {
+    if (!open) return undefined;
+    const close = (event) => { if (wrapRef.current && !wrapRef.current.contains(event.target)) setOpen(false); };
+    document.addEventListener('mousedown', close);
+    return () => document.removeEventListener('mousedown', close);
+  }, [open]);
+
+  const usedPeriod = (iso) => (periods || []).find((item) => item.startDate && item.endDate && iso >= item.startDate && iso <= item.endDate);
+  const firstWeekday = new Date(view.y, view.m, 1).getDay();
+  const daysInMonth = new Date(view.y, view.m + 1, 0).getDate();
+  const cells = [...Array(firstWeekday).fill(null), ...Array.from({ length: daysInMonth }, (_, i) => i + 1)];
+  const shiftMonth = (delta) => setView((v) => { const d = new Date(v.y, v.m + delta, 1); return { y: d.getFullYear(), m: d.getMonth() }; });
+
+  return (
+    <div ref={wrapRef} style={{ position: 'relative' }}>
+      <button type="button" autoFocus={autoFocus} className="period-date-trigger" onClick={() => setOpen((o) => !o)} style={{ width: '100%', textAlign: 'left', padding: '12px 14px', borderRadius: 12, border: '1px solid #e6dfe8', background: '#fff', font: 'inherit', cursor: 'pointer', color: value ? 'inherit' : '#8a97a6' }}>
+        {value ? `${formatThaiDate(value)}` : 'เลือกวันที่'} 📅
+      </button>
+      {open && (
+        <div role="dialog" style={{ position: 'absolute', zIndex: 20, top: 'calc(100% + 4px)', left: 0, width: 280, padding: 12, background: '#fff', border: '1px solid #ddd', borderRadius: 12, boxShadow: '0 8px 24px rgba(0,0,0,.18)' }}>
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8 }}>
+            <button type="button" onClick={() => shiftMonth(-1)} aria-label="เดือนก่อน">‹</button>
+            <strong>{THAI_MONTHS[view.m]} {view.y + 543}</strong>
+            <button type="button" onClick={() => shiftMonth(1)} aria-label="เดือนถัดไป">›</button>
+          </div>
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(7, 1fr)', gap: 2, textAlign: 'center' }}>
+            {WEEKDAY_LABELS.map((label) => <span key={label} style={{ fontSize: 12, color: '#777' }}>{label}</span>)}
+            {cells.map((day, index) => {
+              if (!day) return <span key={`e${index}`} />;
+              const iso = toIsoDate(view.y, view.m, day);
+              const used = usedPeriod(iso);
+              const outOfRange = (min && iso < min) || (max && iso > max);
+              const disabled = Boolean(used) || outOfRange;
+              const selected = iso === value;
+              return (
+                <button
+                  key={iso}
+                  type="button"
+                  disabled={disabled}
+                  title={used ? `อยู่ในงวด “${used.name}” แล้ว` : undefined}
+                  onClick={() => { onChange(iso); setOpen(false); }}
+                  style={{ padding: '6px 0', borderRadius: 8, border: iso === todayIso ? '1px solid #c2185b' : '1px solid transparent', background: selected ? '#c2185b' : used ? '#e3e3e6' : 'transparent', color: selected ? '#fff' : disabled ? '#b0b0b8' : '#222', textDecoration: used ? 'line-through' : 'none', cursor: disabled ? 'not-allowed' : 'pointer' }}
+                >{day}</button>
+              );
+            })}
+          </div>
+          <div style={{ marginTop: 8, fontSize: 12, color: '#777' }}>วันที่เป็นสีเทา = อยู่ในงวดที่เปิดไปแล้ว</div>
+        </div>
+      )}
+    </div>
+  );
+}
+
 function PayrollPeriodModal({ mode, initialName, period, rowCount, revisionCount, busy, existingPeriods = EMPTY_LIST, onClose, onSubmit }) {
   const [name, setName] = useState(initialName || '');
   const [startDate, setStartDate] = useState('');
@@ -2383,14 +2453,14 @@ function PayrollPeriodModal({ mode, initialName, period, rowCount, revisionCount
               </label>
             ) : (
               <div className="period-date-fields" style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
-                <label className="period-name-field">
+                <div className="period-name-field">
                   <span>วันที่เริ่มต้น (Start)</span>
-                  <input type="date" autoFocus value={startDate} max={endDate || undefined} onChange={(event) => setStartDate(event.target.value)} required />
-                </label>
-                <label className="period-name-field">
+                  <PeriodDatePicker autoFocus value={startDate} max={endDate || undefined} periods={existingPeriods} onChange={setStartDate} />
+                </div>
+                <div className="period-name-field">
                   <span>วันที่สิ้นสุด (End)</span>
-                  <input type="date" value={endDate} min={startDate || undefined} onChange={(event) => setEndDate(event.target.value)} required />
-                </label>
+                  <PeriodDatePicker value={endDate} min={startDate || undefined} periods={existingPeriods} onChange={setEndDate} />
+                </div>
               </div>
             )}
             {overlap && <p className="form-error" role="alert" style={{ color: '#c0392b', margin: '8px 0 0' }}>วันที่ทับกับ “{overlap.name}” ({formatThaiDate(overlap.startDate)} – {formatThaiDate(overlap.endDate)}) กรุณาเลือกวันที่ที่ไม่ซ้อนกับงวดก่อนหน้า</p>}
