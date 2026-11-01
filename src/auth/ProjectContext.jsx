@@ -1,7 +1,7 @@
 import { createContext, useCallback, useContext, useEffect, useMemo, useState } from 'react';
 import { isFirebaseConfigured } from '../lib/firebase';
 import { useAuth } from './AuthContext';
-import { subscribeToAllProjects, subscribeToProjectIds } from './projectService';
+import { isProjectEnabled, subscribeToAllProjects, subscribeToProjectIds } from './projectService';
 
 const ProjectContext = createContext(null);
 const ACTIVE_PROJECT_KEY = 'cmg-payroll-active-project';
@@ -19,9 +19,11 @@ const readStoredProject = () => {
 // only the projects a MasterAdmin assigned (updates arrive in realtime).
 export function ProjectProvider({ children }) {
   const { userProfile, isMasterAdmin } = useAuth();
-  const [projects, setProjects] = useState(isFirebaseConfigured ? [] : DEMO_PROJECTS);
+  const [allProjects, setProjects] = useState(isFirebaseConfigured ? [] : DEMO_PROJECTS);
   const [loaded, setLoaded] = useState(!isFirebaseConfigured);
   const [storedId, setStoredId] = useState(readStoredProject);
+  // Projects set to Disable are hidden from every selector (switcher, Assign, ...).
+  const projects = useMemo(() => allProjects.filter(isProjectEnabled), [allProjects]);
   const assignedKey = (userProfile?.assignedProjects || []).join('|');
 
   useEffect(() => {
@@ -42,8 +44,9 @@ export function ProjectProvider({ children }) {
   }, [isMasterAdmin, assignedKey]);
 
   const activeProjectId = useMemo(() => {
-    if (projects.some((project) => project.id === storedId)) return storedId;
-    return projects[0]?.id || '';
+    const enabled = projects.filter((project) => project.status !== 'Disable');
+    if (enabled.some((project) => project.id === storedId)) return storedId;
+    return enabled[0]?.id || '';
   }, [projects, storedId]);
 
   const selectProject = useCallback((projectId) => {
@@ -57,11 +60,12 @@ export function ProjectProvider({ children }) {
 
   const value = useMemo(() => ({
     projects,
+    allProjects,
     loaded,
     activeProjectId,
     activeProject: projects.find((project) => project.id === activeProjectId) || null,
     selectProject,
-  }), [projects, loaded, activeProjectId, selectProject]);
+  }), [projects, allProjects, loaded, activeProjectId, selectProject]);
 
   return <ProjectContext.Provider value={value}>{children}</ProjectContext.Provider>;
 }

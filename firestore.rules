@@ -45,21 +45,24 @@ service cloud.firestore {
       allow read: if isMaster();
     }
 
-    // Projects and everything stored under them (rates, payroll, settings, payrollPeriods...)
+    // Projects: only the assigned users (and MasterAdmin) can read a project.
     match /CMG-Payroll/root/projects/{projectId} {
       allow read: if assigned(projectId);
       allow create, update, delete: if isMaster();
-
-      match /rates/{doc=**} { allow read: if assigned(projectId); allow write: if hasRole('RateAdmin'); }
-      match /settings/{doc=**} { allow read: if assigned(projectId); allow write: if hasRole('RateAdmin') || hasRole('PayrollAdmin'); }
-      match /payroll/{doc=**} { allow read: if assigned(projectId); allow write: if hasRole('PayrollAdmin') || hasRole('WageEntry'); }
-      match /payrollPeriods/{doc=**} { allow read: if assigned(projectId); allow write: if hasRole('PayrollAdmin') || hasRole('WageEntry'); }
-      match /deletedPayrollPeriods/{doc=**} { allow read: if assigned(projectId); allow write: if hasRole('PayrollAdmin'); }
+      match /{doc=**} { allow read: if assigned(projectId); allow write: if isMaster(); }
     }
 
-    // Legacy (pre-project) data: readable by MasterAdmin so it can be copied into a project.
-    match /CMG-Payroll/root/{legacy}/{doc=**} {
-      allow read: if isMaster() && legacy in ['rates', 'payroll', 'settings', 'payrollPeriods'];
+    // Biotime scans saved per period: PayrollAdmin may write them too (the Cloud Function allows it).
+    match /CMG-Payroll/root/payrollPeriods/{periodId}/biotime/{employeeId} {
+      allow read: if approved();
+      allow write: if hasRole('PayrollAdmin') || hasRole('WageEntry');
+    }
+
+    // Shared data (not tied to a project): rates, payroll and settings.
+    match /CMG-Payroll/root/{shared}/{doc=**} {
+      allow read: if approved() && shared in ['rates', 'payroll', 'settings', 'payrollPeriods', 'deletedPayrollPeriods'];
+      allow write: if (isMaster() && shared in ['rates', 'payroll', 'settings', 'payrollPeriods', 'deletedPayrollPeriods'])
+        || (hasRole('WageEntry') && shared in ['payroll', 'payrollPeriods']);
     }
   }
 }

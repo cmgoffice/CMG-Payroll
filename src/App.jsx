@@ -1,14 +1,18 @@
 import { memo, useEffect, useMemo, useRef, useState } from 'react';
 import { effectiveNetTotal, effectiveTravelAmount, formatCell, formatCurrency, isCampTravel, isNameRecentlyChanged, menuItems, sourceCatalog, usersMenuItem } from './data/schema';
 import { isFirebaseConfigured, isMasterDatabaseConfigured } from './lib/firebase';
-import { archivePayrollPeriod, deleteDatasetRecord, setActiveProject, isRowVisible, loadPayrollRevisionRows, PAYROLL_SAVEDRAFT_STATUS, saveDatasetRecord, savePayrollPeriod, savePayrollRevision, saveColumnSettings, saveSpecialPositionOptions, subscribeToColumnSettings, subscribeToDataset, subscribeToPayrollPeriods, subscribeToPayrollRevisions, subscribeToSpecialPositionOptions, syncMasterEmployees } from './lib/repository';
+import { archivePayrollPeriod, deleteDatasetRecord, isRowVisible, loadPayrollRevisionRows, PAYROLL_SAVEDRAFT_STATUS, saveDatasetRecord, savePayrollPeriod, savePayrollRevision, saveColumnSettings, saveSpecialPositionOptions, subscribeToColumnSettings, subscribeToDataset, subscribeToPayrollPeriods, subscribeToPayrollRevisions, subscribeToSpecialPositionOptions, syncMasterEmployees } from './lib/repository';
 import { AuthProvider, useAuth } from './auth/AuthContext';
 import { ProjectProvider, useProjects } from './auth/ProjectContext';
 import ProtectedRoute from './auth/ProtectedRoute';
 import { LoginPage, PendingApprovalPage, RegisterPage } from './auth/pages';
 import { Spinner, usePathname } from './auth/router';
 import { subscribeToUsers } from './auth/userService';
-import { NoProjectNotice, ProfileModal, ProjectsPage, SidebarProfileCard, TopbarProfileMenu, UserManagementPage } from './auth/ui';
+import { ProfileModal, ProjectsPage, SidebarProfileCard, TopbarProfileMenu, UserManagementPage } from './auth/ui';
+import BiotimePanel from './BiotimePanel';
+import ShiftsPage from './ShiftsPage';
+import { subscribeToBiotimeAttendance } from './lib/biotime';
+import { buildEmployeeReport } from './lib/biotimeReport';
 import './styles.css';
 import './auth/auth.css';
 
@@ -81,7 +85,9 @@ const normalizeEmployeeKey = (value) => String(value || '').trim().toLowerCase()
 const payrollRowFromRate = (rate, sheet, sequence) => {
   const employeeId = String(rate.employeeId || '').trim();
   const dailyRate = Number(rate.dailyRateYear69 || 0);
-  const positionAllowance = Number(rate.specialPositionAmount ?? rate.positionAllowance ?? 0);
+  const specialPositionRate = Number(rate.specialPositionAmount ?? rate.positionAllowance ?? 0);
+  // Special-position pay is added per day by the Admin ลงค่าแรง entries, so it starts at 0.
+  const positionAllowance = 0;
   const phoneAllowance = Number(rate.phoneAllowance || 0);
   return {
     id: `auto-payroll-${sheet}-${employeeId.replace(/[^a-zA-Z0-9_-]/g, '-')}`,
@@ -102,6 +108,8 @@ const payrollRowFromRate = (rate, sheet, sequence) => {
     dailyRate,
     travelRate: rate.travelRate ?? '',
     positionAllowance,
+    specialPositionRate,
+    specialFromEntries: true,
     phoneAllowance,
     overtimeRate15: dailyRate / 8 * 1.5,
     regularWage: 0,
@@ -138,7 +146,7 @@ const buildPayrollRowsFromRates = (existingPayroll = {}, ratesBySheet = {}) => {
       if (!rate) return current;
 
       const dailyRate = Number(rate.dailyRateYear69 || 0);
-      const positionAllowance = Number(rate.specialPositionAmount ?? rate.positionAllowance ?? 0);
+      const specialPositionRate = Number(rate.specialPositionAmount ?? rate.positionAllowance ?? 0);
       const phoneAllowance = Number(rate.phoneAllowance || 0);
       const syncedIdentity = {
         firstName: rate.firstName || '',
@@ -148,10 +156,9 @@ const buildPayrollRowsFromRates = (existingPayroll = {}, ratesBySheet = {}) => {
         position: rate.position || '',
         dailyRate,
         travelRate: rate.travelRate ?? '',
-        positionAllowance,
+        specialPositionRate,
         phoneAllowance,
         overtimeRate15: dailyRate / 8 * 1.5,
-        positionPhoneTotal: positionAllowance + phoneAllowance,
       };
       if (!Object.entries(syncedIdentity).some(([key, value]) => String(current[key] ?? '') !== String(value ?? ''))) return current;
       changed = true;
@@ -183,9 +190,15 @@ const defaultColumnWidth = (column) => {
 const normalizeColumnSettings = (columns, settings = {}) => {
   const availableKeys = columns.map((column) => column.key);
   const savedOrder = Array.isArray(settings.order) ? settings.order : [];
-  const order = [...savedOrder.filter((key) => availableKeys.includes(key)), ...availableKeys.filter((key) => !savedOrder.includes(key))];
+  // Columns added after the order was saved go right after their predecessor in the schema, not at the end.
+  const order = savedOrder.filter((key) => availableKeys.includes(key));
+  availableKeys.forEach((key, index) => {
+    if (order.includes(key)) return;
+    const previousIndex = index ? order.indexOf(availableKeys[index - 1]) : -1;
+    order.splice(previousIndex + 1, 0, key);
+  });
   const savedVisible = Array.isArray(settings.visible) ? settings.visible : availableKeys;
-  const visible = availableKeys.filter((key) => savedVisible.includes(key));
+  const visible = availableKeys.filter((key) => savedVisible.includes(key) || (savedOrder.length && !savedOrder.includes(key)));
   const widths = Object.fromEntries(columns.map((column) => {
     const savedWidth = Number(settings.widths?.[column.key]);
     return [column.key, Number.isFinite(savedWidth) ? Math.max(MIN_COLUMN_WIDTH, Math.min(420, savedWidth)) : defaultColumnWidth(column)];
@@ -226,6 +239,7 @@ const menuPaths = {
   payroll: '/payroll',
   rates: '/rates',
   adminWage: '/admin-wage',
+  shifts: '/shifts',
 };
 
 const menuIdFromPath = (pathname) => {
@@ -270,85 +284,307 @@ const recalcPayrollRow = (row) => {
   };
 };
 
-const ADMIN_WAGE_FIELDS = [
-  { key: 'normalDays', label: 'วันทำงาน' },
-  { key: 'overtime15', label: 'OT 1.5' },
-  { key: 'overtime2Sunday', label: 'OT 2 อาทิตย์' },
-  { key: 'overtime2Holiday', label: 'OT 2 วันหยุด' },
-  { key: 'holidayHours', label: 'OT 3 วันหยุด' },
-  { key: 'contractWork', label: 'งานเหมา' },
-  { key: 'wageDrop', label: 'ค่าแรงตก' },
-  { key: 'deduction', label: 'หักเงิน' },
+// Special-position wage entries of one period: each entry is one employee on one date.
+// The pay per day comes from the employee's rate (specialPosition / specialPositionAmount).
+const wageEntryDateLabel = (value) => formatThaiDate(value) || '-';
+
+const wageFullName = (rate) => `${rate?.firstName || ''} ${rate?.lastName || ''}`.trim();
+
+// Entry types of Admin ลงค่าแรง. Amounts live in อัตราค่าแรง, so entries only carry a true/false flag per type
+// (older entries have no flags and count as special-position days).
+const entryHasSpecial = (entry) => entry.special ?? !entry.wageDrop;
+const entryHasWageDrop = (entry) => Boolean(entry.wageDrop);
+const newWageEntryId = () => `wage-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
+
+function WageTypeCheckboxes({ special, wageDrop, onChange }) {
+  return (
+    <div className="wage-type-checks">
+      <label><input type="radio" name="wage-request-type" checked={special && !wageDrop} onChange={() => onChange({ special: true, wageDrop: false })} /> ลงค่าตำแหน่งพิเศษ</label>
+      <label><input type="radio" name="wage-request-type" checked={wageDrop && !special} onChange={() => onChange({ special: false, wageDrop: true })} /> ค่าแรงตก</label>
+    </div>
+  );
+}
+
+// Approval status of an entry. Older entries (saved before approval existed) have no status and count as approved.
+const entryStatus = (entry) => entry.status || 'approved';
+const isEntryApproved = (entry) => entryStatus(entry) === 'approved';
+const WAGE_STATUS_LABELS = { pending: 'Pending', approved: 'Approved', rejected: 'Rejected' };
+
+// One column showing what the request is for: the employee's special position name and/or ค่าแรงตก.
+function WageRequestTypeCell({ entry, rate }) {
+  return (
+    <div className="wage-request-types">
+      {entryHasSpecial(entry) && <span className="wage-type-chip special">{rate?.specialPosition || 'ตำแหน่งพิเศษ'}</span>}
+      {entryHasWageDrop(entry) && <span className="wage-type-chip drop">ค่าแรงตก</span>}
+    </div>
+  );
+}
+
+const WageStatusBadge = ({ entry }) => (
+  <div className="wage-status-cell">
+    <span className={`wage-status-badge ${entryStatus(entry)}`}>{WAGE_STATUS_LABELS[entryStatus(entry)]}</span>
+    {entryStatus(entry) === 'rejected' && entry.rejectReason && <span className="wage-reject-reason" title={entry.rejectReason}>เหตุผล: {entry.rejectReason}</span>}
+  </div>
+);
+
+// Pending: Approve + Reject (MasterAdmin, reject needs a reason), edit, delete.
+// Rejected: edit (goes back to pending) only. Approved: locked.
+function WageEntryActions({ entry, rate, period, siblings = EMPTY_LIST, isMasterAdmin, onSetStatus, onEdit, onRemove }) {
+  const status = entryStatus(entry);
+  const [dialog, setDialog] = useState(null);
+  const [reason, setReason] = useState('');
+  const [form, setForm] = useState({ date: '', special: true, wageDrop: false });
+  const [error, setError] = useState('');
+  const close = () => { setDialog(null); setError(''); };
+  const openReject = () => { setReason(''); setError(''); setDialog('reject'); };
+  const openEdit = () => { const wageDrop = entryHasWageDrop(entry) && !entryHasSpecial(entry); setForm({ date: entry.date, special: !wageDrop, wageDrop }); setError(''); setDialog('edit'); };
+  const submitReject = (event) => {
+    event.preventDefault();
+    if (!reason.trim()) { setError('กรุณาใส่เหตุผลที่ Reject'); return; }
+    onSetStatus(entry.id, 'rejected', reason.trim());
+    close();
+  };
+  const submitEdit = (event) => {
+    event.preventDefault();
+    if (!form.date) { setError('กรุณาเลือกวันที่'); return; }
+    if ((period?.startDate && form.date < period.startDate) || (period?.endDate && form.date > period.endDate)) { setError('เลือกได้เฉพาะวันที่อยู่ในงวดนี้'); return; }
+    if (!form.special && !form.wageDrop) { setError('กรุณาเลือกประเภทอย่างน้อย 1 อย่าง'); return; }
+    if (siblings.some((other) => other.id !== entry.id && other.date === form.date && normalizeEmployeeKey(other.employeeId) === normalizeEmployeeKey(entry.employeeId))) { setError('พนักงานคนนี้ถูกลงวันที่นี้แล้ว (ซ้ำ)'); return; }
+    onEdit(entry.id, form);
+    close();
+  };
+  return (
+    <div className="wage-entry-actions">
+      {isMasterAdmin && status === 'pending' && <button type="button" className="row-approve-button" onClick={() => onSetStatus(entry.id, 'approved')}>Approve</button>}
+      {isMasterAdmin && status === 'pending' && <button type="button" className="row-reject-button" onClick={openReject}>Reject</button>}
+      {status !== 'approved' && <button type="button" className="row-icon-button" onClick={openEdit} title="แก้ไข" aria-label="แก้ไข">✎</button>}
+      {status === 'pending' && <button type="button" className="row-icon-button danger" onClick={() => onRemove(entry.id)} title="ลบ" aria-label="ลบ">🗑</button>}
+      {dialog && (
+        <div className="modal-backdrop" onMouseDown={(event) => event.target === event.currentTarget && close()}>
+          {dialog === 'reject' ? (
+            <form className="editor-modal profile-modal" role="dialog" aria-modal="true" onSubmit={submitReject}>
+              <div className="modal-header"><div><div className="eyebrow">{entry.employeeId} · {wageEntryDateLabel(entry.date)}</div><h2>Reject รายการ</h2></div><button type="button" className="close-button" onClick={close}>×</button></div>
+              <div className="profile-modal-body">
+                <label><span>เหตุผล</span><textarea autoFocus rows={4} value={reason} onChange={(event) => { setReason(event.target.value); setError(''); }} placeholder="ระบุเหตุผลที่ไม่อนุมัติ" /></label>
+                {error && <div className="wage-entry-error">{error}</div>}
+              </div>
+              <div className="modal-footer"><button type="button" className="secondary-button" onClick={close}>ยกเลิก</button><button type="submit" className="primary-button">Reject</button></div>
+            </form>
+          ) : (
+            <form className="editor-modal profile-modal wage-edit-modal" role="dialog" aria-modal="true" onSubmit={submitEdit}>
+              <div className="modal-header"><div><div className="eyebrow">{entry.employeeId}{rate?.firstName ? ` · ${wageFullName(rate)}` : ''}</div><h2>แก้ไขรายการ</h2></div><button type="button" className="close-button" onClick={close}>×</button></div>
+              <div className="profile-modal-body wage-edit-body">
+                {status === 'rejected' && entry.rejectReason && <div className="wage-edit-note reject"><strong>เหตุผลที่ถูก Reject</strong>{entry.rejectReason}</div>}
+                <label className="wage-edit-field"><span>วันที่</span><input type="date" value={form.date} min={period?.startDate || undefined} max={period?.endDate || undefined} onChange={(event) => { setForm({ ...form, date: event.target.value }); setError(''); }} /></label>
+                <div className="wage-edit-field">
+                  <span>ประเภทคำขอ</span>
+                  <div className="wage-edit-types">
+                    <label className={form.special ? 'checked' : ''}><input type="radio" name="wage-edit-type" checked={form.special} onChange={() => { setForm({ ...form, special: true, wageDrop: false }); setError(''); }} /><div><strong>ค่าตำแหน่งพิเศษ</strong><small>{rate?.specialPosition || 'ไม่ได้ระบุตำแหน่งพิเศษ'}</small></div></label>
+                    <label className={form.wageDrop ? 'checked' : ''}><input type="radio" name="wage-edit-type" checked={form.wageDrop} onChange={() => { setForm({ ...form, special: false, wageDrop: true }); setError(''); }} /><div><strong>ค่าแรงตก</strong></div></label>
+                  </div>
+                </div>
+                {status === 'rejected' && <div className="wage-edit-note">บันทึกแล้วรายการจะกลับเป็น Pending เพื่อรออนุมัติใหม่</div>}
+                {error && <div className="wage-entry-error">{error}</div>}
+              </div>
+              <div className="modal-footer"><button type="button" className="secondary-button" onClick={close}>ยกเลิก</button><button type="submit" className="primary-button">บันทึก</button></div>
+            </form>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// Admin ลงค่าแรง landing page: one row per entry (employee + date). An employee can appear many times, but not twice on the same date.
+function AdminWageRoster({ periods, period, entries, rateByEmployee, positionColorOptions = EMPTY_LIST, loading, isMasterAdmin, onSelectPeriod, onAddEntries, onSetStatus, onEditEntry, onRemoveEntry, onOpenEmployee }) {
+  const [adding, setAdding] = useState(false);
+  const [input, setInput] = useState('');
+  const [error, setError] = useState('');
+  const [selected, setSelected] = useState(() => new Set());
+  const [date, setDate] = useState('');
+  const [types, setTypes] = useState({ special: true, wageDrop: false });
+  const rows = useMemo(() => [...entries].sort((a, b) => String(a.date).localeCompare(String(b.date)) || String(a.employeeId).localeCompare(String(b.employeeId))), [entries]);
+  const countByEmployee = useMemo(() => {
+    const counts = new Map();
+    entries.forEach((entry) => counts.set(normalizeEmployeeKey(entry.employeeId), (counts.get(normalizeEmployeeKey(entry.employeeId)) || 0) + 1));
+    return counts;
+  }, [entries]);
+  const people = useMemo(() => new Set(rows.map((row) => normalizeEmployeeKey(row.employeeId))).size, [rows]);
+  const closeModal = () => { setAdding(false); setInput(''); setError(''); setSelected(new Set()); setDate(''); setTypes({ special: true, wageDrop: false }); };
+  const candidates = useMemo(() => [...rateByEmployee.values()], [rateByEmployee]);
+  const keyword = input.trim().toLowerCase();
+  const visible = useMemo(() => candidates.filter((rate) => !keyword
+    || [rate.employeeId, rate.firstName, rate.lastName, rate.teamName, rate.specialPosition].some((value) => String(value ?? '').toLowerCase().includes(keyword))), [candidates, keyword]);
+  const allVisibleSelected = visible.length > 0 && visible.every((rate) => selected.has(rate.employeeId));
+  const toggle = (ids, checked) => { setSelected((current) => { const next = new Set(current); ids.forEach((id) => (checked ? next.add(id) : next.delete(id))); return next; }); setError(''); };
+
+  const submit = (event) => {
+    event.preventDefault();
+    if (!selected.size) { setError('กรุณาเลือกพนักงานอย่างน้อย 1 คน'); return; }
+    if (!date) { setError('กรุณาเลือกวันที่'); return; }
+    if ((period?.startDate && date < period.startDate) || (period?.endDate && date > period.endDate)) { setError('เลือกได้เฉพาะวันที่อยู่ในงวดนี้'); return; }
+    if (!types.special && !types.wageDrop) { setError('กรุณาเลือกประเภทอย่างน้อย 1 อย่าง'); return; }
+    const duplicates = candidates.filter((rate) => selected.has(rate.employeeId) && entries.some((entry) => entry.date === date && normalizeEmployeeKey(entry.employeeId) === normalizeEmployeeKey(rate.employeeId)));
+    if (duplicates.length) { setError(`ลงวันที่นี้แล้ว (ซ้ำ): ${duplicates.map((rate) => rate.employeeId).join(', ')}`); return; }
+    onAddEntries(candidates.filter((rate) => selected.has(rate.employeeId)).map((rate) => ({ id: newWageEntryId(), employeeId: rate.employeeId, date, special: types.special, wageDrop: types.wageDrop, status: 'pending' })));
+    closeModal();
+  };
+
+  return (
+    <div className="page-content dataset-page">
+      <section className="page-heading-row">
+        <div><div className="eyebrow">ADMIN</div><h1>Admin ลงค่าแรง</h1><p className="page-description">รายการลงค่าตำแหน่งพิเศษ / ค่าแรงตกของแต่ละงวด · เปลี่ยนงวดเพื่อดูข้อมูลย้อนหลัง ข้อมูลงวดเก่าไม่หาย</p></div>
+        <div className="page-heading-actions">
+          <select className="period-select" value={period?.id || ''} onChange={(event) => onSelectPeriod(event.target.value)} disabled={loading || !periods.length} aria-label="งวด">
+            {!periods.length && <option value="">ยังไม่มีงวดที่เปิดลงข้อมูล</option>}
+            {periods.map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}
+          </select>
+          <button type="button" className="primary-button" onClick={() => setAdding(true)} disabled={!periods.length}>＋ เพิ่มรายการ</button>
+        </div>
+      </section>
+      <section className="data-panel">
+        <div className="table-summary"><span><strong>{people}</strong> คน · <strong>{entries.length}</strong> รายการ{period?.startDate && period?.endDate ? <> · งวด {wageEntryDateLabel(period.startDate)} – {wageEntryDateLabel(period.endDate)}</> : null}</span></div>
+        <div className="table-scroll">
+          <div className="data-table-stage">
+          <table className="data-table" style={{ width: '1420px' }}>
+            <colgroup><col style={{ width: '130px' }} /><col style={{ width: '220px' }} /><col style={{ width: '180px' }} /><col style={{ width: '150px' }} /><col style={{ width: '130px' }} /><col style={{ width: '200px' }} /><col style={{ width: '110px' }} /><col style={{ width: '70px' }} /><col style={{ width: '230px' }} /></colgroup>
+            <thead><tr><th>รหัสพนักงาน</th><th>ชื่อ-นามสกุล</th><th>แผนก</th><th>ตำแหน่ง</th><th>วันที่</th><th>ประเภทคำขอ</th><th>Status</th><th>รายการ</th><th className="action-header">จัดการ</th></tr></thead>
+            <tbody>
+              {rows.length === 0 ? (
+                <tr><td className="empty-state" colSpan={9}>{periods.length ? 'ยังไม่มีรายการในงวดนี้' : 'ยังไม่มีงวดที่เปิดลงข้อมูล'}<span>{periods.length ? 'กด “เพิ่มรายการ” เพื่อเลือกพนักงาน วันที่ และประเภท' : 'ให้ผู้ดูแลกด “เปิดลงข้อมูล” ที่การ์ดในเมนูสรุปค่าแรงก่อน'}</span></td></tr>
+              ) : rows.map((row) => {
+                const key = normalizeEmployeeKey(row.employeeId);
+                const rate = rateByEmployee.get(key);
+                return (
+                  <tr key={row.id}>
+                    <td><strong className="employee-code">{row.employeeId}</strong></td>
+                    <td className="name-cell"><button type="button" className="name-link" onClick={() => onOpenEmployee(row.employeeId)} title="ดูรายละเอียดรายการของพนักงานคนนี้">{wageFullName(rate) || '-'}</button></td>
+                    <td>{rate?.department || '-'}</td>
+                    <td className="position-cell"><PositionBadge value={rate?.position} options={positionColorOptions} /></td>
+                    <td>{wageEntryDateLabel(row.date)}</td>
+                    <td><WageRequestTypeCell entry={row} rate={rate} /></td>
+                    <td><WageStatusBadge entry={row} /></td>
+                    <td>{countByEmployee.get(key) || 0}</td>
+                    <td className="action-cell"><WageEntryActions entry={row} rate={rate} period={period} siblings={entries} isMasterAdmin={isMasterAdmin} onSetStatus={onSetStatus} onEdit={onEditEntry} onRemove={onRemoveEntry} /></td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+          </div>
+        </div>
+      </section>
+      {adding && (
+        <div className="modal-backdrop" onMouseDown={(event) => event.target === event.currentTarget && closeModal()}>
+          <form className="editor-modal profile-modal wage-add-modal" role="dialog" aria-modal="true" onSubmit={submit}>
+            <div className="modal-header"><div><div className="eyebrow">{period?.name}</div><h2>เพิ่มรายการ</h2></div><button type="button" className="close-button" onClick={closeModal}>×</button></div>
+            <div className="profile-modal-body">
+              <div className="wage-add-options">
+                <label><span>วันที่</span><input type="date" value={date} min={period?.startDate || undefined} max={period?.endDate || undefined} onChange={(event) => { setDate(event.target.value); setError(''); }} /></label>
+                <div><span className="wage-add-label">ประเภท</span><WageTypeCheckboxes special={types.special} wageDrop={types.wageDrop} onChange={(next) => { setTypes(next); setError(''); }} /></div>
+              </div>
+              <input autoFocus value={input} onChange={(event) => setInput(event.target.value)} placeholder="ค้นหารหัส ชื่อ หรือชื่อชุด" />
+              <div className="add-rows-table wage-add-table" role="listbox" aria-multiselectable="true">
+                <label className="add-rows-row add-rows-head">
+                  <input type="checkbox" checked={allVisibleSelected} disabled={!visible.length} onChange={() => toggle(visible.map((rate) => rate.employeeId), !allVisibleSelected)} />
+                  <span>รหัส</span><span>ชื่อ - นามสกุล</span><span>ชื่อชุด</span><span>ตำแหน่งพิเศษ</span>
+                </label>
+                <div className="add-rows-scroll">
+                  {visible.map((rate) => (
+                    <label key={rate.id} role="option" aria-selected={selected.has(rate.employeeId)} className={`add-rows-row ${selected.has(rate.employeeId) ? 'selected' : ''}`}>
+                      <input type="checkbox" checked={selected.has(rate.employeeId)} onChange={(event) => toggle([rate.employeeId], event.target.checked)} />
+                      <strong>{rate.employeeId}</strong>
+                      <span>{wageFullName(rate) || '-'}</span>
+                      <span>{rate.teamName || '-'}</span>
+                      <span>{rate.specialPosition || '-'}</span>
+                    </label>
+                  ))}
+                  {!visible.length && <div className="add-empty">ไม่พบรายชื่อที่ค้นหา</div>}
+                </div>
+              </div>
+              {error && <div className="wage-entry-error">{error}</div>}
+            </div>
+            <div className="modal-footer"><span className="wage-add-count">เลือกแล้ว {selected.size} คน</span><button type="button" className="secondary-button" onClick={closeModal}>ยกเลิก</button><button type="submit" className="primary-button">เพิ่ม</button></div>
+          </form>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// Columns of the rate sheet shown for one employee (same layout as the Excel file: numbered row, yellow header).
+const WAGE_SHEET_COLUMNS = [
+  { label: 'รหัสพนักงาน', width: 130, value: (rate) => rate.employeeId },
+  { label: 'ชื่อ', width: 130, value: (rate) => rate.firstName },
+  { label: 'นามสกุล', width: 130, value: (rate) => rate.lastName },
+  { label: 'แผนก', width: 180, value: (rate) => rate.department },
+  { label: 'ตำแหน่ง', width: 150, value: (rate) => rate.position },
+  { label: 'ค่าแรงปี69', width: 120, value: (rate) => formatCurrency(rate.dailyRateYear69 || 0), numeric: true },
+  { label: 'อัตราค่าเดินทาง', width: 130, value: (rate) => (Number.isFinite(Number(rate.travelRate)) && rate.travelRate !== '' && rate.travelRate != null ? formatCurrency(rate.travelRate) : rate.travelRate), numeric: true },
+  { label: 'ตำแหน่งพิเศษ', width: 150, value: (rate) => rate.specialPosition },
+  { label: 'ค่าโทรศัพท์', width: 110, value: (rate) => (rate.phoneAllowance ? formatCurrency(rate.phoneAllowance) : ''), numeric: true },
+  { label: 'สวัสดิการช่วยเหลือ', width: 150, value: (rate) => (rate.welfareSupport ? formatCurrency(rate.welfareSupport) : '-'), numeric: true },
 ];
 
-function AdminWagePage({ rowsBySheet, period, onChangeRow, onAdd, onSave }) {
-  const sheets = Object.keys(sourceCatalog.payroll.tabs);
-  const [sheet, setSheet] = useState(sheets[0]);
-  const [query, setQuery] = useState('');
-  const rows = useMemo(() => {
-    const keyword = query.trim().toLowerCase();
-    return (rowsBySheet[sheet] || []).filter((row) => !keyword
-      || `${row.employeeId} ${row.firstName} ${row.lastName} ${row.department}`.toLowerCase().includes(keyword));
-  }, [rowsBySheet, sheet, query]);
-  const total = rows.reduce((sum, row) => sum + effectiveNetTotal(row), 0);
+function AdminWageEmployeePage({ period, employeeId, rate, entries, positionColorOptions = EMPTY_LIST, isMasterAdmin, onAddEntry, onSetStatus, onEditEntry, onRemoveEntry, onBack }) {
+  const [date, setDate] = useState('');
+  const [types, setTypes] = useState({ special: true, wageDrop: false });
+  const [error, setError] = useState('');
+  const key = normalizeEmployeeKey(employeeId);
+  const mine = useMemo(() => entries.filter((entry) => normalizeEmployeeKey(entry.employeeId) === key).sort((a, b) => String(a.date).localeCompare(String(b.date))), [entries, key]);
+
+  const handleAdd = (event) => {
+    event.preventDefault();
+    if (!date) { setError('กรุณาเลือกวันที่'); return; }
+    if ((period?.startDate && date < period.startDate) || (period?.endDate && date > period.endDate)) { setError('เลือกได้เฉพาะวันที่อยู่ในงวดนี้'); return; }
+    if (!types.special && !types.wageDrop) { setError('กรุณาเลือกประเภทอย่างน้อย 1 อย่าง'); return; }
+    if (mine.some((entry) => entry.date === date)) { setError('พนักงานคนนี้ถูกลงวันที่นี้แล้ว (ซ้ำ)'); return; }
+    setError('');
+    onAddEntry({ employeeId, date, special: types.special, wageDrop: types.wageDrop, status: 'pending' });
+    setDate('');
+  };
 
   return (
     <div className="page-content">
       <section className="page-heading-row payroll-heading-row">
         <div>
-          <div className="eyebrow">ADMIN</div>
-          <h1>Admin ลงค่าแรง</h1>
-          <p className="page-description">กรอกจำนวนวันทำงาน, OT และเงินหักของพนักงานงวด {period?.name || 'ปัจจุบัน'} ระบบคำนวณยอดสุทธิให้อัตโนมัติ</p>
+          <button type="button" className="text-button" onClick={onBack}>← กลับรายชื่อ</button>
+          <div className="wage-employee-title"><div className="eyebrow">ADMIN · {period?.name}</div><h1>{employeeId} · {wageFullName(rate) || '-'}</h1></div>
         </div>
-        <div className="page-heading-actions">
-          <button className="secondary-button" onClick={() => onAdd(sheet)}>＋ เพิ่มพนักงาน</button>
-          <button className="primary-button" onClick={onSave}>บันทึก</button>
-        </div>
+        <form className="wage-entry-form wage-entry-inline" onSubmit={handleAdd}>
+          <input type="date" aria-label="วันที่" value={date} min={period?.startDate || undefined} max={period?.endDate || undefined} onChange={(event) => setDate(event.target.value)} />
+          <WageTypeCheckboxes special={types.special} wageDrop={types.wageDrop} onChange={setTypes} />
+          <button type="submit" className="primary-button">＋ เพิ่มรายการ</button>
+        </form>
+      </section>
+      {error && <div className="wage-entry-error">{error}</div>}
+      <section className="data-panel">
+        {rate ? (
+          <div className="table-scroll">
+            <div className="data-table-stage">
+              <table className="data-table" style={{ width: '1428px' }}>
+                <colgroup>{WAGE_SHEET_COLUMNS.map((column) => <col key={column.label} style={{ width: `${column.width || 120}px` }} />)}</colgroup>
+                <thead><tr>{WAGE_SHEET_COLUMNS.map((column) => <th key={column.label} className={column.numeric ? 'align-right' : ''}><span className="column-header-label">{column.label}</span></th>)}</tr></thead>
+                <tbody><tr>{WAGE_SHEET_COLUMNS.map((column, index) => <td key={column.label} className={[column.numeric ? 'align-right' : '', column.label === 'ชื่อ' || column.label === 'นามสกุล' ? 'name-cell' : '', column.label === 'ตำแหน่ง' ? 'position-cell' : ''].filter(Boolean).join(' ')}>{index === 0 ? <strong className="employee-code">{column.value(rate)}</strong> : column.label === 'ตำแหน่ง' ? <PositionBadge value={rate.position} options={positionColorOptions} /> : (column.value(rate) || '')}</td>)}</tr></tbody>
+              </table>
+            </div>
+          </div>
+        ) : <div className="wage-entry-error">ไม่พบพนักงานนี้ในอัตราค่าแรง (อาจไม่ได้ทำงานแล้ว)</div>}
       </section>
       <section className="data-panel">
-        <div className="data-panel-toolbar">
-          <div className="tabs-inline">
-            {sheets.map((name) => (
-              <button key={name} className={name === sheet ? 'primary-button' : 'secondary-button'} onClick={() => setSheet(name)}>{name}</button>
-            ))}
-          </div>
-          <div className="toolbar-controls">
-            <label className="search-box"><span>⌕</span><input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="ค้นหารหัส / ชื่อ / แผนก" /></label>
-          </div>
-        </div>
-        <div className="table-summary"><span><strong>{rows.length}</strong> รายการ</span><span>ยอดสุทธิรวม <strong>{formatCurrency(total)}</strong></span></div>
+        <div className="table-summary"><span><strong>{mine.length}</strong> รายการ · <strong>{new Set(mine.map((entry) => entry.date)).size}</strong> วัน · ค่าตำแหน่งพิเศษ <strong>{mine.filter(entryHasSpecial).length}</strong> วัน · ค่าแรงตก <strong>{mine.filter(entryHasWageDrop).length}</strong> วัน</span></div>
         <div className="table-scroll">
           <table className="data-table">
-            <thead>
-              <tr>
-                <th>ลำดับ</th><th>รหัส</th><th>ชื่อ-นามสกุล</th><th>แผนก</th><th>ค่าแรง/วัน</th>
-                {ADMIN_WAGE_FIELDS.map((field) => <th key={field.key}>{field.label}</th>)}
-                <th>ยอดสุทธิ</th>
-              </tr>
-            </thead>
+            <thead><tr><th>วันที่</th><th>ประเภทคำขอ</th><th>Status</th><th className="action-header">จัดการ</th></tr></thead>
             <tbody>
-              {rows.length === 0 ? (
-                <tr><td className="empty-state" colSpan={ADMIN_WAGE_FIELDS.length + 6}>ยังไม่มีพนักงานในแท็บนี้<span>กด “เพิ่มพนักงาน” เพื่อเลือกจากอัตราค่าแรง</span></td></tr>
-              ) : rows.map((row) => (
-                <tr key={row.id}>
-                  <td>{row.sequence}</td>
-                  <td className="employee-code">{row.employeeId}</td>
-                  <td>{`${row.firstName || ''} ${row.lastName || ''}`.trim()}</td>
-                  <td>{row.department}</td>
-                  <td>{formatCurrency(row.dailyRate)}</td>
-                  {ADMIN_WAGE_FIELDS.map((field) => (
-                    <td key={field.key}>
-                      <input
-                        type="number"
-                        min="0"
-                        step="any"
-                        className="admin-wage-input"
-                        value={row[field.key] ?? 0}
-                        onChange={(event) => onChangeRow(sheet, row.id, { [field.key]: event.target.value === '' ? 0 : Number(event.target.value) })}
-                      />
-                    </td>
-                  ))}
-                  <td className="calculated-cell"><strong>{formatCurrency(effectiveNetTotal(row))}</strong></td>
+              {mine.length === 0 ? (
+                <tr><td className="empty-state" colSpan={4}>ยังไม่มีรายการ<span>เลือกวันที่และประเภท แล้วกด “เพิ่มรายการ”</span></td></tr>
+              ) : mine.map((entry) => (
+                <tr key={entry.id}>
+                  <td>{wageEntryDateLabel(entry.date)}</td>
+                  <td><WageRequestTypeCell entry={entry} rate={rate} /></td>
+                  <td><WageStatusBadge entry={entry} /></td>
+                  <td className="action-cell"><WageEntryActions entry={entry} rate={rate} period={period} siblings={mine} isMasterAdmin={isMasterAdmin} onSetStatus={onSetStatus} onEdit={onEditEntry} onRemove={onRemoveEntry} /></td>
                 </tr>
               ))}
             </tbody>
@@ -373,9 +609,9 @@ const createBlankRecord =(category, sheet) => {
   return record;
 };
 
-function Workspace({ projectId }) {
+function Workspace() {
   const { userProfile, isMasterAdmin, canAccess } = useAuth();
-  const { projects, activeProject, activeProjectId, selectProject } = useProjects();
+  const { projects, allProjects } = useProjects();
   const [users, setUsers] = useState(EMPTY_LIST);
   const [usersLoaded, setUsersLoaded] = useState(false);
   const [profileOpen, setProfileOpen] = useState(false);
@@ -392,6 +628,8 @@ function Workspace({ projectId }) {
   const [payrollRevisions, setPayrollRevisions] = useState([]);
   const [payrollPeriods, setPayrollPeriods] = useState([]);
   const [payrollView, setPayrollView] = useState('list');
+  const [wageEmployeeId, setWageEmployeeId] = useState('');
+  const wageAutoOpenedRef = useRef(false);
   const [openingPeriodId, setOpeningPeriodId] = useState('');
   const [payrollModal, setPayrollModal] = useState(null);
   const [payrollAddSheet, setPayrollAddSheet] = useState(null);
@@ -484,7 +722,7 @@ function Workspace({ projectId }) {
       const next = buildPayrollRowsFromRates(current.payroll, current.rates);
       return next.changed ? { ...current, payroll: next.rows } : current;
     });
-  }, [datasets.rates]);
+  }, [datasets.rates, datasets.payroll]);
 
   useEffect(() => {
     let active = true;
@@ -547,8 +785,45 @@ function Workspace({ projectId }) {
     return () => window.clearTimeout(timeout);
   }, [toast]);
 
-  const payrollRows = useMemo(() => Object.values(datasets.payroll).flat(), [datasets.payroll]);
+  const currentPeriodCard = useMemo(() => payrollPeriods.find((item) => item.id === payrollPeriod.id), [payrollPeriods, payrollPeriod.id]);
+  const wageEntries = currentPeriodCard?.wageEntries || EMPTY_LIST;
+  const wageOpenPeriods = useMemo(() => payrollPeriods.filter((item) => item.entryOpen !== false), [payrollPeriods]);
+  const wageEntryRates = useMemo(() => Object.values(datasets.rates).flat().filter(isRowVisible), [datasets.rates]);
+  const wageRateByEmployee = useMemo(() => new Map(wageEntryRates.map((rate) => [normalizeEmployeeKey(rate.employeeId), rate])), [wageEntryRates]);
+  // Summary rows with the special-position pay from Admin ลงค่าแรง (days x rate amount) added in.
+  const [biotimeRecords, setBiotimeRecords] = useState([]);
+  useEffect(() => {
+    setBiotimeRecords([]);
+    return subscribeToBiotimeAttendance({ periodId: payrollPeriod?.id, onData: setBiotimeRecords, onError: () => setBiotimeRecords([]) });
+  }, [payrollPeriod?.id]);
+  const biotimeTotals = useMemo(() => new Map(biotimeRecords.map((record) => [normalizeEmployeeKey(record.employeeId), buildEmployeeReport(record).totals])), [biotimeRecords]);
+  const payrollWithSpecialPay = useMemo(() => {
+    const daysByEmployee = new Map();
+    wageEntries.filter((entry) => entryHasSpecial(entry) && isEntryApproved(entry)).forEach((entry) => {
+      const key = normalizeEmployeeKey(entry.employeeId);
+      daysByEmployee.set(key, (daysByEmployee.get(key) || 0) + 1);
+    });
+    const rateByEmployee = new Map(wageEntryRates.map((rate) => [normalizeEmployeeKey(rate.employeeId), rate]));
+    return Object.fromEntries(Object.entries(datasets.payroll).map(([sheet, rows]) => [sheet, rows.map((payrollRow) => {
+      const key = normalizeEmployeeKey(payrollRow.employeeId);
+      // อัตราค่าแรง / ค่าเดินทาง always come from the rate table, never from the stored payroll row.
+      const sourceRate = (datasets.rates[PAYROLL_RATE_SHEET_BY_PAYROLL_SHEET[sheet]] || []).find((rate) => normalizeEmployeeKey(rate.employeeId) === key);
+      const rawRow = sourceRate ? { ...payrollRow, dailyRate: Number(sourceRate.dailyRateYear69) || 0, overtimeRate15: (Number(sourceRate.dailyRateYear69) || 0) / 8 * 1.5, travelRate: sourceRate.travelRate ?? '' } : payrollRow;
+      // Biotime attendance (saved for this period) drives working days, OT 1.5 and Sunday OT hours.
+      const attendance = biotimeTotals.get(key);
+      const row = attendance ? { ...rawRow, normalDays: attendance.normal, overtime15: attendance.ot, overtime2Sunday: attendance.sunday, fromBiotime: true } : rawRow;
+      const days = daysByEmployee.get(key) || 0;
+      // Net total = วันทำงานปกติ × อัตราค่าแรง (+ ค่าเดินทางที่เป็นตัวเลข × วันทำงาน) — always recomputed from the rates.
+      if (!days && !row.specialFromEntries) return recalcPayrollRow(row);
+      const rate = rateByEmployee.get(key);
+      const amount = Number(rate?.specialPositionAmount ?? row.specialPositionRate ?? 0);
+      return recalcPayrollRow({ ...row, specialFromEntries: true, specialPositionRate: amount, specialPositionDays: days, positionAllowance: amount * days });
+    })]));
+  }, [datasets.payroll, datasets.rates, wageEntries, wageEntryRates, biotimeTotals]);
+  const summaryEmployeeIds = useMemo(() => new Set(Object.values(datasets.payroll).flat().map((row) => normalizeEmployeeKey(row.employeeId))), [datasets.payroll]);
+  const payrollRows = useMemo(() => Object.values(payrollWithSpecialPay).flat(), [payrollWithSpecialPay]);
   const rateRows = useMemo(() => Object.values(datasets.rates).flat().filter(isRowVisible), [datasets.rates]);
+  const biotimeEmployees = useMemo(() => [...new Map(payrollRows.filter((row) => row.employeeId).map((row) => [String(row.employeeId).trim(), { employeeId: String(row.employeeId).trim(), name: [row.firstName, row.lastName].filter(Boolean).join(' '), firstName: row.firstName || '', lastName: row.lastName || '', department: row.department || '', position: row.position || '' }])).values()], [payrollRows]);
   const positionColorOptions = useMemo(() => {
     const allRows = [...Object.values(datasets.rates).flat(), ...Object.values(datasets.payroll).flat()];
     return [...new Set([
@@ -559,7 +834,6 @@ function Workspace({ projectId }) {
   const totalPayroll = useMemo(() => payrollRows.reduce((sum, row) => sum + effectiveNetTotal(row), 0), [payrollRows]);
   const activeMenuItem = [...menuItems, usersMenuItem].find((item) => item.id === activeMenu) || menuItems.find((item) => item.id === 'overview');
   const menuAllowed = canAccess(activeMenu);
-  const needsProject = !projectId && !['projects', 'users'].includes(activeMenu);
   const pendingUserCount = useMemo(() => users.filter((user) => user.status === 'pending').length, [users]);
   const visibleMenuItems = menuItems.filter((item) => canAccess(item.id));
 
@@ -572,9 +846,9 @@ function Workspace({ projectId }) {
   }, [menuAllowed]);
   const activeSheet = activeTabs[activeMenu];
   const activeTableRows = useMemo(() => {
-    const sourceRows = datasets[activeMenu]?.[activeSheet] || EMPTY_LIST;
+    const sourceRows = (activeMenu === 'payroll' ? payrollWithSpecialPay : datasets[activeMenu])?.[activeSheet] || EMPTY_LIST;
     return activeMenu === 'rates' ? sourceRows.filter(isRowVisible) : sourceRows;
-  }, [activeMenu, activeSheet, datasets]);
+  }, [activeMenu, activeSheet, datasets, payrollWithSpecialPay]);
 
   useEffect(() => {
     const initialMenu = menuIdFromPath(window.location.pathname);
@@ -611,6 +885,8 @@ function Workspace({ projectId }) {
     setSearch('');
     setPayrollAddSheet(null);
     if (nextMenu === 'payroll') setPayrollView('list');
+    if (nextMenu === 'adminWage') setWageEmployeeId('');
+    if (nextMenu !== 'adminWage') wageAutoOpenedRef.current = false;
   };
 
   const upsertPayrollPeriodCard = (period) => {
@@ -635,12 +911,27 @@ function Workspace({ projectId }) {
     }
   };
 
+  const togglePeriodEntry = (period) => {
+    const entryOpen = period.entryOpen === false;
+    const updated = { ...period, entryOpen };
+    upsertPayrollPeriodCard(updated);
+    if (period.id === payrollPeriod.id) setPayrollPeriod((current) => ({ ...current, entryOpen }));
+    savePayrollPeriod({ id: period.id, name: period.name, startDate: period.startDate, endDate: period.endDate, status: period.status, createdAt: period.createdAt, updatedAt: period.updatedAt, entryOpen }).catch((error) => {
+      console.error('ไม่สามารถเปลี่ยนสถานะงวด', error);
+      setToast('เปลี่ยนสถานะงวดไม่สำเร็จ กรุณาตรวจสอบการเชื่อมต่อ');
+    });
+    setToast(entryOpen ? `เปิดลงข้อมูล “${period.name}” แล้ว` : `ปิดลงข้อมูล “${period.name}” แล้ว`);
+  };
+
   const openPayrollPeriod = async (period) => {
     if (openingPeriodId) return;
     setOpeningPeriodId(period.id);
     try {
-      setPayrollPeriod({ id: period.id, name: period.name, status: period.status || PAYROLL_SAVEDRAFT_STATUS, createdAt: period.createdAt, activeRevisionId: period.activeRevisionId, updatedAt: period.updatedAt });
-      const savedRows = period.activeRevisionId
+      setPayrollPeriod({ id: period.id, name: period.name, startDate: period.startDate, endDate: period.endDate, entryOpen: period.entryOpen !== false, status: period.status || PAYROLL_SAVEDRAFT_STATUS, createdAt: period.createdAt, activeRevisionId: period.activeRevisionId, updatedAt: period.updatedAt });
+      // Unsaved draft rows (added since the last Revision) take priority over the saved Revision.
+      const savedRows = period.draftRows?.length
+        ? period.draftRows
+        : period.activeRevisionId
         ? await loadPayrollRevisionRows({ periodId: period.id, revisionId: period.activeRevisionId })
         : [];
       setDatasets((current) => {
@@ -667,7 +958,18 @@ function Workspace({ projectId }) {
     return rows.filter(isRowVisible);
   };
 
-  const addPayrollRows = (sheet, rates) => {
+  // Persists the payroll rows of the open period as a draft on the period document, so nothing is lost before a Revision is saved.
+  const persistPayrollDraft = (nextPayroll) => {
+    const draftRows = Object.values(nextPayroll).flat();
+    const card = currentPeriodCard || { ...payrollPeriod, periodId: payrollPeriod.id };
+    upsertPayrollPeriodCard({ ...card, draftRows });
+    savePayrollPeriod({ id: payrollPeriod.id, name: payrollPeriod.name, startDate: payrollPeriod.startDate, endDate: payrollPeriod.endDate, status: payrollPeriod.status, createdAt: payrollPeriod.createdAt, updatedAt: card.updatedAt, draftRows }).catch((error) => {
+      console.error('ไม่สามารถบันทึกดราฟต์ค่าแรง', error);
+      setToast('บันทึกดราฟต์ไม่สำเร็จ กรุณาตรวจสอบการเชื่อมต่อ');
+    });
+  };
+
+  const addPayrollRows = (sheet, rates, onDone = () => setPayrollAddSheet(null)) => {
     const existingRows = datasets.payroll[sheet] || [];
     const existingIds = new Set(existingRows.map((row) => normalizeEmployeeKey(row.employeeId)));
     const newRates = rates.filter((rate) => {
@@ -682,23 +984,63 @@ function Workspace({ projectId }) {
     }
     const startSequence = existingRows.reduce((max, row) => Math.max(max, Number(row.sequence) || 0), 0);
     const newRows = newRates.map((rate, index) => payrollRowFromRate(rate, sheet, startSequence + index + 1));
-    setDatasets((current) => ({
-      ...current,
-      payroll: { ...current.payroll, [sheet]: [...(current.payroll[sheet] || []), ...newRows] },
-    }));
-    setPayrollAddSheet(null);
+    const nextPayroll = { ...datasets.payroll, [sheet]: [...existingRows, ...newRows] };
+    setDatasets((current) => ({ ...current, payroll: nextPayroll }));
+    persistPayrollDraft(nextPayroll);
+    onDone();
     setToast(`เพิ่ม ${newRows.length} รายการเข้าแท็บ ${sheet} แล้ว`);
     return true;
   };
 
-  const updateAdminWageRow = (sheet, rowId, changes) => {
-    setDatasets((current) => ({
-      ...current,
-      payroll: {
-        ...current.payroll,
-        [sheet]: (current.payroll[sheet] || []).map((row) => (row.id === rowId ? recalcPayrollRow({ ...row, ...changes }) : row)),
-      },
+  // Entering Admin ลงค่าแรง loads the current (or first) open period so its payroll rows are available.
+  useEffect(() => {
+    if (activeMenu !== 'adminWage' || wageAutoOpenedRef.current || !wageOpenPeriods.length) return;
+    wageAutoOpenedRef.current = true;
+    openPayrollPeriod(wageOpenPeriods.find((item) => item.id === payrollPeriod.id) || wageOpenPeriods[0]);
+  }, [activeMenu, wageOpenPeriods]);
+
+  const saveWagePatch = (patch) => {
+    const card = currentPeriodCard || { ...payrollPeriod, periodId: payrollPeriod.id };
+    upsertPayrollPeriodCard({ ...card, ...patch });
+    savePayrollPeriod({ id: card.id, name: card.name, startDate: card.startDate, endDate: card.endDate, status: card.status, createdAt: card.createdAt, updatedAt: card.updatedAt, ...patch }).catch((error) => {
+      console.error('ไม่สามารถบันทึกรายการ Admin ลงค่าแรง', error);
+      setToast('บันทึกรายการไม่สำเร็จ กรุณาตรวจสอบการเชื่อมต่อ');
+    });
+  };
+  const saveWageEntries = (nextEntries) => saveWagePatch({ wageEntries: nextEntries });
+
+  const addWageEntries = (newEntries) => {
+    saveWageEntries([...wageEntries, ...newEntries]);
+    setToast(newEntries.length === 1 ? `เพิ่มรายการ ${newEntries[0].employeeId} วันที่ ${formatThaiDate(newEntries[0].date)} แล้ว` : `เพิ่ม ${newEntries.length} รายการแล้ว`);
+  };
+
+  const addWageEntry = (entry) => addWageEntries([{ id: newWageEntryId(), ...entry }]);
+
+  // Only pending entries can be approved / rejected; an approved entry is locked.
+  const setWageEntryStatus = (entryId, status, reason = '') => {
+    if (!isMasterAdmin) return;
+    saveWageEntries(wageEntries.map((entry) => {
+      if (entry.id !== entryId || entryStatus(entry) !== 'pending') return entry;
+      const { rejectReason, ...rest } = entry;
+      return status === 'rejected' ? { ...rest, status, rejectReason: reason } : { ...rest, status };
     }));
+    setToast(status === 'approved' ? 'อนุมัติรายการแล้ว' : 'ปฏิเสธรายการแล้ว');
+  };
+
+  // Editing a pending / rejected entry sends it back to pending for (re)approval.
+  const editWageEntry = (entryId, changes) => {
+    saveWageEntries(wageEntries.map((entry) => {
+      if (entry.id !== entryId || isEntryApproved(entry)) return entry;
+      const { rejectReason, ...rest } = entry;
+      return { ...rest, date: changes.date, special: changes.special, wageDrop: changes.wageDrop, status: 'pending' };
+    }));
+    setToast('แก้ไขรายการแล้ว');
+  };
+
+  const removeWageEntry = (entryId) => {
+    // Only pending entries can be deleted; approved / rejected ones are kept.
+    saveWageEntries(wageEntries.filter((entry) => entry.id !== entryId || entryStatus(entry) !== 'pending'));
+    setToast('ลบรายการแล้ว');
   };
 
   const openEditor = (category, sheet, row = null) => {
@@ -787,6 +1129,7 @@ function Workspace({ projectId }) {
           [sheet]: (current[category][sheet] || []).filter((item) => item.id !== row.id),
         },
       }));
+      if (category === 'payroll') persistPayrollDraft({ ...datasets.payroll, [sheet]: (datasets.payroll[sheet] || []).filter((item) => item.id !== row.id) });
       setDeleteTarget(null);
       setFirebaseError('');
       setToast('ลบรายการแล้ว');
@@ -955,7 +1298,9 @@ function Workspace({ projectId }) {
         revisionCount: payrollRevisions.length + 1,
         rowCount: saved.rowCount,
         updatedAt: saved.updatedAt,
+        draftRows: [],
       });
+      savePayrollPeriod({ id: payrollPeriod.id, name: payrollPeriod.name, startDate: payrollPeriod.startDate, endDate: payrollPeriod.endDate, status: PAYROLL_SAVEDRAFT_STATUS, createdAt: payrollPeriod.createdAt, updatedAt: saved.updatedAt, draftRows: [] }).catch(() => {});
       setPayrollPeriod((current) => ({
         ...current,
         status: PAYROLL_SAVEDRAFT_STATUS,
@@ -983,12 +1328,19 @@ function Workspace({ projectId }) {
     setPayrollModal({ type: 'new-period', initialName: '' });
   };
 
-  const createPayrollPeriod = (periodName) => {
-    const normalizedName = String(periodName || '').trim();
-    if (!normalizedName) return false;
+  const createPayrollPeriod = ({ startDate, endDate }) => {
+    if (!startDate || !endDate || endDate < startDate) return false;
+    if (findOverlappingPeriod(payrollPeriods, startDate, endDate)) {
+      setToast('วันที่ทับกับงวดก่อนหน้า กรุณาเลือกช่วงวันที่ใหม่');
+      return false;
+    }
+    const normalizedName = `งวดวันที่ ${formatThaiDate(startDate)} – ${formatThaiDate(endDate)}`;
     const nextPeriod = {
       id: createPeriodId(normalizedName),
       name: normalizedName,
+      startDate,
+      endDate,
+      entryOpen: true,
       status: PAYROLL_SAVEDRAFT_STATUS,
       createdAt: new Date().toISOString(),
     };
@@ -1007,6 +1359,14 @@ function Workspace({ projectId }) {
     return true;
   };
 
+  const renderNavItem = (item) => (
+    <a key={item.id} href={pathForMenu(item.id)} className={`nav-item ${activeMenu === item.id ? 'active' : ''}`} onClick={(event) => { event.preventDefault(); selectMenu(item.id); }} aria-current={activeMenu === item.id ? 'page' : undefined}>
+      <span className="nav-icon">{iconForMenu[item.id]}</span>
+      <span>{item.label}</span>
+      {sourceCatalog[item.id] && <span className="nav-count">{Object.keys(sourceCatalog[item.id].tabs).length}</span>}
+    </a>
+  );
+
   const connectionLabel = firebaseError || (isFirebaseConfigured ? 'Firebase พร้อมใช้งาน' : 'โหมดตัวอย่าง');
 
   return (
@@ -1023,14 +1383,26 @@ function Workspace({ projectId }) {
 
         <div className="nav-label">เมนูหลัก</div>
         <nav className="main-nav" aria-label="เมนูหลัก">
-          {visibleMenuItems.map((item) => (
-            <a key={item.id} href={pathForMenu(item.id)} className={`nav-item ${activeMenu === item.id ? 'active' : ''}`} onClick={(event) => { event.preventDefault(); selectMenu(item.id); }} aria-current={activeMenu === item.id ? 'page' : undefined}>
-              <span className="nav-icon">{iconForMenu[item.id]}</span>
-              <span>{item.label}</span>
-              {sourceCatalog[item.id] && <span className="nav-count">{Object.keys(sourceCatalog[item.id].tabs).length}</span>}
-            </a>
-          ))}
+          {visibleMenuItems.filter((item) => !item.group).map(renderNavItem)}
         </nav>
+
+        {visibleMenuItems.some((item) => item.group === 'global') && (
+          <>
+            <div className="nav-label nav-label-group">ข้อมูลกลาง (ไม่ผูกโครงการ)</div>
+            <nav className="main-nav" aria-label="ข้อมูลกลาง">
+              {visibleMenuItems.filter((item) => item.group === 'global').map(renderNavItem)}
+            </nav>
+          </>
+        )}
+
+        {visibleMenuItems.some((item) => item.group === 'wage') && (
+          <>
+            <div className="nav-label nav-label-group">บันทึกค่าแรง</div>
+            <nav className="main-nav" aria-label="บันทึกค่าแรง">
+              {visibleMenuItems.filter((item) => item.group === 'wage').map(renderNavItem)}
+            </nav>
+          </>
+        )}
 
         <div className="sidebar-bottom">
           <div className="source-mini-card">
@@ -1052,11 +1424,6 @@ function Workspace({ projectId }) {
         <header className="topbar">
           <div className="breadcrumb"><span>CMG Payroll</span><span className="breadcrumb-separator">/</span><strong>{activeMenuItem.label}</strong></div>
           <div className="topbar-actions">
-            {projects.length > 0 && (
-              <select className="project-switcher" aria-label="โครงการ" value={activeProjectId} onChange={(event) => selectProject(event.target.value)}>
-                {projects.map((project) => <option key={project.id} value={project.id}>{project.name}</option>)}
-              </select>
-            )}
             <span className={`connection-pill ${isFirebaseConfigured ? 'connected' : ''} ${firebaseError ? 'error' : ''}`}><span className="status-dot" />{connectionLabel}</span>
             <button className="icon-button" aria-label="การแจ้งเตือน" onClick={() => isMasterAdmin && selectMenu('users')}>♢{isMasterAdmin && pendingUserCount > 0 && <span className="notification-dot" />}</button>
             <TopbarProfileMenu onEditProfile={() => setProfileOpen(true)} />
@@ -1064,20 +1431,42 @@ function Workspace({ projectId }) {
         </header>
 
         {!menuAllowed ? null : activeMenu === 'projects' ? (
-          <ProjectsPage projects={projects} activeProjectId={activeProjectId} onSelect={selectProject} onOpen={() => selectMenu('overview')} onNotify={setToast} />
+          <ProjectsPage projects={allProjects} rateRows={rateRows} onNotify={setToast} />
+        ) : activeMenu === 'shifts' ? (
+          <ShiftsPage projects={projects} canEdit={isMasterAdmin} onNotify={setToast} />
         ) : activeMenu === 'users' ? (
-          <UserManagementPage users={users} projects={projects} loaded={usersLoaded} onNotify={setToast} />
-        ) : needsProject ? (
-          <NoProjectNotice onOpenProjects={() => selectMenu('projects')} />
+          <UserManagementPage users={users} projects={allProjects} loaded={usersLoaded} onNotify={setToast} />
         ) : activeMenu === 'overview' ? (
           <Overview totalPayroll={totalPayroll} payrollRows={payrollRows} rateRows={rateRows} onNavigate={selectMenu} />
+        ) : activeMenu === 'adminWage' && !wageEmployeeId ? (
+          <AdminWageRoster
+            periods={wageOpenPeriods}
+            period={wageOpenPeriods.find((item) => item.id === payrollPeriod.id)}
+            entries={wageEntries}
+            rateByEmployee={wageRateByEmployee}
+            positionColorOptions={positionColorOptions}
+            loading={Boolean(openingPeriodId)}
+            onSelectPeriod={(periodId) => { const target = wageOpenPeriods.find((item) => item.id === periodId); if (target) openPayrollPeriod(target); }}
+            isMasterAdmin={isMasterAdmin}
+            onAddEntries={addWageEntries}
+            onSetStatus={setWageEntryStatus}
+            onEditEntry={editWageEntry}
+            onRemoveEntry={removeWageEntry}
+            onOpenEmployee={setWageEmployeeId}
+          />
         ) : activeMenu === 'adminWage' ? (
-          <AdminWagePage
-            rowsBySheet={datasets.payroll}
-            period={payrollPeriod}
-            onChangeRow={updateAdminWageRow}
-            onAdd={(sheet) => { selectMenu('payroll'); setActiveTabs((tabs) => ({ ...tabs, payroll: sheet })); setPayrollView('detail'); setPayrollAddSheet(sheet); }}
-            onSave={openSavePayrollRevision}
+          <AdminWageEmployeePage
+            period={currentPeriodCard ? { ...payrollPeriod, startDate: currentPeriodCard.startDate ?? payrollPeriod.startDate, endDate: currentPeriodCard.endDate ?? payrollPeriod.endDate } : payrollPeriod}
+            employeeId={wageEmployeeId}
+            rate={wageRateByEmployee.get(normalizeEmployeeKey(wageEmployeeId))}
+            entries={wageEntries}
+            positionColorOptions={positionColorOptions}
+            isMasterAdmin={isMasterAdmin}
+            onAddEntry={addWageEntry}
+            onSetStatus={setWageEntryStatus}
+            onEditEntry={editWageEntry}
+            onRemoveEntry={removeWageEntry}
+            onBack={() => setWageEmployeeId('')}
           />
         ) : activeMenu === 'payroll' && payrollView === 'list' ? (
           <PayrollPeriodList
@@ -1086,6 +1475,7 @@ function Workspace({ projectId }) {
             openingId={openingPeriodId}
             onOpen={openPayrollPeriod}
             onDelete={setPeriodToDelete}
+            onToggleEntry={togglePeriodEntry}
             onNew={openNewPayrollPeriod}
           />
         ) : activeMenu === 'payroll' && payrollAddSheet ? (
@@ -1099,6 +1489,7 @@ function Workspace({ projectId }) {
           />
         ) : (
           <DatasetView
+            biotimeEmployees={biotimeEmployees}
             onBack={activeMenu === 'payroll' ? () => { setPayrollView('list'); setSearch(''); } : undefined}
             category={activeMenu}
             sheet={activeTabs[activeMenu]}
@@ -1153,6 +1544,7 @@ function Workspace({ projectId }) {
           rowCount={payrollRows.length}
           revisionCount={payrollRevisions.length}
           busy={savingPayrollRevision}
+          existingPeriods={payrollPeriods}
           onClose={() => !savingPayrollRevision && setPayrollModal(null)}
           onSubmit={payrollModal.type === 'save' ? savePayrollRevisionSnapshot : createPayrollPeriod}
         />
@@ -1174,15 +1566,6 @@ function Workspace({ projectId }) {
   );
 }
 
-function ProjectGate() {
-  const { activeProjectId, loaded } = useProjects();
-  // Repository paths follow the active project; the workspace re-mounts when it
-  // changes so no data from the previous project can linger on screen.
-  setActiveProject(activeProjectId);
-  if (!loaded) return <Spinner label="กำลังโหลดโครงการ..." />;
-  return <Workspace key={activeProjectId || 'none'} projectId={activeProjectId} />;
-}
-
 function AppRoutes() {
   const pathname = usePathname().replace(/\/+$/, '').toLowerCase();
   if (pathname === '/login') return <LoginPage />;
@@ -1190,7 +1573,7 @@ function AppRoutes() {
   if (pathname === '/pending') return <ProtectedRoute requireApproved={false}><PendingApprovalPage /></ProtectedRoute>;
   return (
     <ProtectedRoute>
-      <ProjectProvider><ProjectGate /></ProjectProvider>
+      <ProjectProvider><Workspace /></ProjectProvider>
     </ProtectedRoute>
   );
 }
@@ -1259,21 +1642,23 @@ const formatPeriodDate = (value) => {
   return Number.isNaN(date.getTime()) ? '-' : date.toLocaleDateString('th-TH', { day: 'numeric', month: 'short', year: 'numeric' });
 };
 
-function PayrollPeriodList({ periods, currentPeriodId, openingId, onOpen, onDelete, onNew }) {
+function PayrollPeriodList({ periods, currentPeriodId, openingId, onOpen, onDelete, onNew, onToggleEntry, emptyHint, eyebrow = 'PAYROLL PERIODS', title = 'สรุปค่าแรง', description = 'เลือกงวดงานที่บันทึกไว้เพื่อเปิดดูและแก้ไขข้อมูล' }) {
   return (
     <div className="page-content dataset-page">
       <section className="page-heading-row payroll-heading-row">
-        <div><div className="eyebrow">PAYROLL PERIODS</div><h1>สรุปค่าแรง</h1><p className="page-description">เลือกงวดงานที่บันทึกไว้เพื่อเปิดดูและแก้ไขข้อมูล</p></div>
-        <div className="page-heading-actions period-actions"><button className="primary-button" onClick={onNew}>＋ เปิดงวดใหม่</button></div>
+        <div><div className="eyebrow">{eyebrow}</div><h1>{title}</h1><p className="page-description">{description}</p></div>
+        {onNew && <div className="page-heading-actions period-actions"><button className="primary-button" onClick={onNew}>＋ เปิดงวดใหม่</button></div>}
       </section>
       {periods.length ? (
         <div className="period-card-grid">
           {periods.map((period) => (
-            <div key={period.id} className="period-card-wrap">
-            <button type="button" className="period-card-delete" onClick={() => onDelete(period)} disabled={Boolean(openingId)} aria-label={`ลบงวด ${period.name}`} title="ลบงวด">🗑</button>
+            <div key={period.id} className={`period-card-wrap ${onToggleEntry ? 'has-toggle' : ''}`}>
+            {onToggleEntry && <button type="button" className={`period-entry-toggle ${period.entryOpen === false ? 'is-closed' : 'is-open'}`} onClick={() => onToggleEntry(period)} disabled={Boolean(openingId)} title="กดเพื่อเปลี่ยนสถานะ">{period.entryOpen === false ? '🔒 ปิดลงข้อมูล' : '🔓 เปิดลงข้อมูล'}</button>}
+            {onDelete && <button type="button" className="period-card-delete" onClick={() => onDelete(period)} disabled={Boolean(openingId)} aria-label={`ลบงวด ${period.name}`} title="ลบงวด">🗑</button>}
             <button type="button" className={`period-card ${period.id === currentPeriodId ? 'is-current' : ''}`} onClick={() => onOpen(period)} disabled={Boolean(openingId)}>
               <span className="period-card-top"><span className="period-card-status">{period.status || PAYROLL_SAVEDRAFT_STATUS}</span>{period.id === currentPeriodId && <span className="period-card-current">งวดล่าสุดที่เปิด</span>}</span>
               <strong className="period-card-name">{period.name}</strong>
+              {period.startDate && period.endDate && <span className="period-card-range">{formatThaiDate(period.startDate)} – {formatThaiDate(period.endDate)}</span>}
               <span className="period-card-stats">
                 <span><b>{period.revisionCount || 0}</b> Revision</span>
                 <span><b>{period.rowCount || 0}</b> รายการ</span>
@@ -1284,15 +1669,17 @@ function PayrollPeriodList({ periods, currentPeriodId, openingId, onOpen, onDele
           ))}
         </div>
       ) : (
-        <div className="period-empty"><strong>ยังไม่มีงวดที่บันทึกไว้</strong><span>กด “เปิดงวดใหม่” เพื่อเริ่มบันทึกค่าแรงงวดแรก</span></div>
+        <div className="period-empty"><strong>ยังไม่มีงวดที่บันทึกไว้</strong><span>{onNew ? 'กด “เปิดงวดใหม่” เพื่อเริ่มบันทึกค่าแรงงวดแรก' : (emptyHint || 'ให้ผู้ดูแลเปิดงวดในเมนูสรุปค่าแรงก่อน')}</span></div>
       )}
     </div>
   );
 }
 
-function DatasetView({ onBack, category, sheet, onSheetChange, rows, search, setSearch, onAdd, onEdit, onInlineUpdate, onDelete, onSync, onImport, period, revisionCount = 0, onSavePeriod, onOpenNewPeriod, specialPositionOptions, specialPositionColorOptions = [], positionColorOptions = [], onSpecialPositionOptionsChange, syncing, canSyncMaster }) {
+function DatasetView({ biotimeEmployees = EMPTY_LIST, onBack, category, sheet, onSheetChange, rows, search, setSearch, onAdd, onEdit, onInlineUpdate, onDelete, onSync, onImport, period, revisionCount = 0, onSavePeriod, onOpenNewPeriod, specialPositionOptions, specialPositionColorOptions = [], positionColorOptions = [], onSpecialPositionOptionsChange, syncing, canSyncMaster }) {
   const config = sourceCatalog[category];
-  const tab = config.tabs[sheet];
+  const [payrollSection, setPayrollSection] = useState('table');
+  const isBiotimeTab = category === 'payroll' && payrollSection === 'biotime';
+  const tab = config.tabs[sheet] || Object.values(config.tabs)[0];
   const settingsKey = `${category}:${sheet}`;
   const importInputRef = useRef(null);
   const [importing, setImporting] = useState(false);
@@ -1425,25 +1812,37 @@ function DatasetView({ onBack, category, sheet, onSheetChange, rows, search, set
   return (
     <div className="page-content dataset-page">
       {category === 'rates' ? (
-        <section className="page-heading-row source-row">{sourceBanner}<div className="dataset-actions">{fileActions}{onSync && <button className="sync-button" onClick={onSync} disabled={syncing} title={canSyncMaster ? 'ดึงข้อมูลพนักงานจาก Master Database' : 'กรุณาตั้งค่า Master Database ในไฟล์ .env'}><span>↻</span> {syncing ? 'กำลัง Sync...' : 'Sync ข้อมูล'}</button>}</div></section>
+        <section className="page-heading-row source-row"><div className="tabs" role="tablist" aria-label={`แท็บ${config.label}`}>
+          {Object.entries(config.tabs).map(([tabId, item]) => <button key={tabId} role="tab" aria-selected={sheet === tabId} className={`tab-button ${sheet === tabId ? 'active' : ''}`} onClick={() => { onSheetChange(tabId); setSearch(''); }}>{item.label}<span className="tab-count">{tabId === sheet ? rows.length : '·'}</span></button>)}
+      </div><div className="dataset-actions">{fileActions}{onSync && <button className="sync-button" onClick={onSync} disabled={syncing} title={canSyncMaster ? 'ดึงข้อมูลพนักงานจาก Master Database' : 'กรุณาตั้งค่า Master Database ในไฟล์ .env'}><span>↻</span> {syncing ? 'กำลัง Sync...' : 'Sync ข้อมูล'}</button>}</div></section>
       ) : (
         <>
-          <section className="page-heading-row payroll-heading-row"><div>{onBack && <button className="secondary-button period-back-button" onClick={onBack}>← งวดทั้งหมด</button>}<div className="eyebrow">PAYROLL PERIODS</div><h1>{config.label}{period?.name ? <> <span className="period-title-name">{period.name}</span></> : null}</h1><p className="page-description">{tab.description} · กด “เพิ่มรายการ” เพื่อเลือกพนักงานจากอัตราค่าแรง</p></div><div className="page-heading-actions period-actions"><div className="period-state"><span>งวดปัจจุบัน</span><strong>{period?.name || 'งวดปัจจุบัน'}</strong><small><b>Savedraft</b> · {revisionCount} Revision</small></div><button className="secondary-button add-row-button" onClick={onAdd}><span>＋</span> เพิ่มรายการ</button><button className="primary-button" onClick={onSavePeriod}>บันทึก</button></div></section>
+          <section className="page-heading-row payroll-heading-row"><div>{onBack && <button className="secondary-button period-back-button" onClick={onBack}>← งวดทั้งหมด</button>}<div className="eyebrow">PAYROLL PERIODS</div><h1>{config.label}{period?.name ? <> <span className="period-title-name">{period.name}</span></> : null}</h1><p className="page-description">{tab.description} · กด “เพิ่มรายการ” เพื่อเลือกพนักงานจากอัตราค่าแรง</p></div><div className="page-heading-actions period-actions"><div className="period-state"><span>งวดปัจจุบัน</span><strong>{period?.name || 'งวดปัจจุบัน'}</strong><small><b>Savedraft</b> · {revisionCount} Revision</small></div>{!isBiotimeTab && <button className="secondary-button add-row-button" onClick={onAdd}><span>＋</span> เพิ่มรายการ</button>}<button className="primary-button" onClick={onSavePeriod}>บันทึก</button></div></section>
           {sourceBanner}
         </>
       )}
 
-      <div className="tabs" role="tablist" aria-label={`แท็บ${config.label}`}>
-        {Object.entries(config.tabs).map(([tabId, item]) => <button key={tabId} role="tab" aria-selected={sheet === tabId} className={`tab-button ${sheet === tabId ? 'active' : ''}`} onClick={() => { onSheetChange(tabId); setSearch(''); }}>{item.label}<span className="tab-count">{tabId === sheet ? rows.length : '·'}</span></button>)}
-      </div>
+      {category === 'payroll' && (
+        <div className="tabs" role="tablist" aria-label="ส่วนข้อมูลของงวด">
+          <button role="tab" aria-selected={!isBiotimeTab} className={`tab-button ${!isBiotimeTab ? 'active' : ''}`} onClick={() => setPayrollSection('table')}>ตารางค่าแรง</button>
+          <button role="tab" aria-selected={isBiotimeTab} className={`tab-button ${isBiotimeTab ? 'active' : ''}`} onClick={() => setPayrollSection('biotime')}>การลงเวลา Biotime</button>
+        </div>
+      )}
 
+      {!isBiotimeTab && category !== 'rates' && <div className="tabs" role="tablist" aria-label={`แท็บ${config.label}`}>
+        {Object.entries(config.tabs).map(([tabId, item]) => <button key={tabId} role="tab" aria-selected={sheet === tabId} className={`tab-button ${sheet === tabId ? 'active' : ''}`} onClick={() => { onSheetChange(tabId); setSearch(''); }}>{item.label}<span className="tab-count">{tabId === sheet ? rows.length : '·'}</span></button>)}
+      </div>}
+
+      {isBiotimeTab ? (
+        <BiotimePanel period={period} employees={biotimeEmployees} PaginationControls={PaginationControls} />
+      ) : (
       <section className="data-panel">
         <div className="data-panel-toolbar"><div><h2>{tab.label}</h2><p>หัวตารางตรงตามชีตต้นแบบ แถวข้อมูลเริ่มที่แถว {tab.dataStartRow}</p></div><div className="toolbar-controls">{category === 'rates' && <SpecialPositionOptionsManager options={specialPositionOptions} onChange={onSpecialPositionOptionsChange} />}<ColumnSettingsManager columns={tab.columns} settings={columnSettings} onChange={updateColumnSettings} /><div className="search-box"><span>⌕</span><input value={search} onChange={(event) => setSearch(event.target.value)} placeholder="ค้นหาพนักงานหรือข้อมูล..." /></div><button className="filter-button">≡ <span>ตัวกรอง</span></button></div></div>
-        <div className="table-summary"><span>แสดง <strong>{pageStart}-{pageEnd}</strong> จาก {filteredRows.length} รายการ</span></div>
         <div ref={tableScrollRef} className="table-scroll"><DataTable columns={visibleColumns} columnWidths={columnSettings.widths} onColumnResize={(key, width) => updateColumnSettings((current) => ({ ...current, widths: { ...current.widths, [key]: width } }))} rows={pageRows} sheet={sheet} now={clock} onEdit={onEdit} onInlineUpdate={onInlineUpdate} onDelete={onDelete} specialPositionOptions={specialPositionColorOptions} positionColorOptions={positionColorOptions} /></div>
         <PaginationControls currentPage={currentPage} pageCount={pageCount} totalCount={filteredRows.length} onPageChange={setCurrentPage} />
         <div className="data-panel-footer"><span>แหล่งข้อมูล: {sourceName} / ชีต {tab.sourceSheet.trim()}</span><span>อัปเดตล่าสุด: {isFirebaseConfigured ? 'Firebase' : 'ข้อมูลตัวอย่าง'}</span></div>
       </section>
+      )}
       {importPreview && <ImportSummaryModal preview={importPreview} busy={importing} onClose={() => !importing && setImportPreview(null)} onConfirm={confirmImport} />}
     </div>
   );
@@ -1669,15 +2068,15 @@ const sameOptionList = (previous = EMPTY_LIST, next = EMPTY_LIST) => previous ==
   || (previous.length === 0 && next.length === 0);
 
 const DEDUCT_COLUMN_KEYS = ['wageDrop', 'deduction', 'socialSecurity'];
-const INCOME_COLUMN_KEYS = ['dailyRate', 'travelRate', 'positionAllowance', 'phoneAllowance', 'overtimeRate15', 'contractWork'];
+const INCOME_COLUMN_KEYS = ['dailyRate', 'travelRate', 'positionAllowance', 'phoneAllowance', 'overtimeRate15', 'overtime2SundayAmount', 'overtime2HolidayAmount', 'holidayHoursAmount', 'contractWork'];
 const columnSignClass = (key) => (DEDUCT_COLUMN_KEYS.includes(key) ? 'col-deduct' : INCOME_COLUMN_KEYS.includes(key) ? 'col-income' : '');
 
 const DataTableRow = memo(function DataTableRow({ sheet, columns, row, now, onEdit, onInlineUpdate, onDelete, specialPositionOptions, positionColorOptions }) {
   return <tr onDoubleClick={(event) => { if (event.target.closest('button, input, select, textarea')) return; onEdit(row); }}>{columns.map((column) => {
     const nameChanged = isNameRecentlyChanged(row, column.key, now);
-    const displayValue = column.key === 'travelAmount' ? effectiveTravelAmount(row) : column.key === 'netTotal' ? effectiveNetTotal(row) : row[column.key];
+    const displayValue = column.key === 'travelAmount' ? effectiveTravelAmount(row) : column.key === 'netTotal' ? effectiveNetTotal(row) : column.key === 'dailyRate' ? (Number(row.dailyRate) || 0) * (Number(row.normalDays) || 0) : column.key === 'travelRate' ? (row.travelRate !== '' && row.travelRate != null && Number.isFinite(Number(row.travelRate)) ? (Number(row.travelRate) || 0) * (Number(row.normalDays) || 0) : row.travelRate) : column.key === 'overtimeRate15' ? (Number(row.overtime15) || 0) * (Number(row.overtimeRate15) || 0) : row[column.key];
     return <td key={column.key} title={nameChanged ? 'ชื่อถูกเปลี่ยนจาก Master Database ภายใน 24 ชั่วโมงที่ผ่านมา' : undefined} className={[columnSignClass(column.key), column.key === 'netTotal' ? 'align-right' : '', !column.editable && column.editable !== undefined ? 'calculated-cell' : '', column.key === 'firstName' || column.key === 'lastName' ? 'name-cell' : '', nameChanged ? 'name-changed-cell' : '', column.type === 'special-position' ? 'special-position-cell' : '', column.key === 'position' ? 'position-cell' : ''].filter(Boolean).join(' ')}>{column.type === 'special-position' ? <SpecialPositionCell row={row} column={column} options={specialPositionOptions} onChange={(changes) => onInlineUpdate?.(row, changes)} /> : column.key === 'position' ? <PositionBadge value={row[column.key]} options={positionColorOptions} /> : column.key === 'employeeId' ? <strong className="employee-code">{formatCell(displayValue, column.type)}</strong> : column.key === 'netTotal' || column.key === 'dailyRateYear69' ? <strong>{formatCell(displayValue, column.type)}</strong> : formatCell(displayValue, column.type)}</td>;
-  })}<td className="action-cell"><button className="row-edit-button" onClick={() => onEdit(row)}>แก้ไข</button>{onDelete && <button className="row-delete-button" onClick={() => onDelete(row)}>ลบ</button>}</td></tr>;
+  })}<td className="filler-cell" aria-hidden="true" /><td className="action-cell"><button className="row-edit-button" onClick={() => onEdit(row)}>แก้ไข</button>{onDelete && <button className="row-delete-button" onClick={() => onDelete(row)}>ลบ</button>}</td></tr>;
 }, (previous, next) => previous.sheet === next.sheet
   && previous.columns === next.columns
   && previous.row === next.row
@@ -1699,14 +2098,19 @@ const DataTable = memo(function DataTable({ sheet, columns, columnWidths = {}, o
       const delta = event.clientX - current.startX;
       const width = Math.max(MIN_COLUMN_WIDTH, Math.min(420, current.startWidth + delta));
       current.width = width;
-      current.delta = delta;
+      current.delta = width - current.startWidth;
       setResizePreview({ key: current.key, left: current.startLeft + width - current.startWidth, width });
     };
     const handleMouseUp = () => {
       const current = resizeRef.current;
       if (!current) return;
-      const finalWidth = current.width ?? current.startWidth;
-      (current.keys || [current.key]).forEach((key) => onColumnResize?.(key, finalWidth));
+      if (current.delta !== 0) {
+        // Apply the same drag distance to every selected column, keeping each one's own starting width.
+        (current.keys || [current.key]).forEach((key) => {
+          const startWidth = current.startWidths?.[key] ?? current.startWidth;
+          onColumnResize?.(key, Math.max(MIN_COLUMN_WIDTH, Math.min(420, startWidth + current.delta)));
+        });
+      }
       resizeRef.current = null;
       setResizePreview(null);
       document.body.classList.remove('is-resizing-column');
@@ -1740,13 +2144,15 @@ const DataTable = memo(function DataTable({ sheet, columns, columnWidths = {}, o
   return (
     <div className="data-table-stage">
       {resizePreview && <span className="column-resize-preview" style={{ left: `${resizePreview.left}px` }} aria-hidden="true" />}
-      <table className="data-table" style={{ width: `${tableWidth}px` }}>
+      <table className="data-table data-table-resizable" style={{ width: `${tableWidth}px` }}>
         <colgroup>
           {columns.map((column) => <col key={column.key} style={{ width: `${columnWidths[column.key] || 120}px` }} />)}
+          {/* Filler column with no width: absorbs any spare panel width so resizing one column never redistributes the others. */}
+          <col className="filler-column" />
           <col className="action-column" style={{ width: '88px' }} />
         </colgroup>
-        <thead><tr>{columns.map((column) => <th key={column.key} onClick={() => toggleSelected(column.key)} title="คลิกเพื่อเลือกหลายคอลัมน์ แล้วลากขอบเพื่อปรับพร้อมกัน" className={[columnSignClass(column.key), column.key === 'netTotal' ? 'align-right' : '', selectedKeys.includes(column.key) ? 'selected-header' : '', !column.editable && column.editable !== undefined ? 'calculated-header' : '', column.type === 'special-position' ? 'special-position-header' : ''].filter(Boolean).join(' ')}><span className="column-header-label">{column.label}</span><span className="column-resizer" role="separator" aria-label={`ปรับความกว้างคอลัมน์ ${column.label}`} onClick={(event) => event.stopPropagation()} onMouseDown={(event) => startResize(event, column)} /></th>)}<th className="action-header">จัดการ</th></tr></thead>
-        <tbody>{rows.length ? rows.map((row) => <DataTableRow key={row.id || `${sheet}-${row.sequence}-${row.employeeId}`} sheet={sheet} columns={columns} row={row} now={now} onEdit={onEdit} onInlineUpdate={onInlineUpdate} onDelete={onDelete} specialPositionOptions={specialPositionOptions} positionColorOptions={positionColorOptions} />) : <tr><td colSpan={columns.length + 1} className="empty-state"><span className="empty-icon">⌁</span><strong>ยังไม่มีข้อมูลในแท็บนี้</strong><span>กด “เพิ่มรายการ” เพื่อเริ่มบันทึกข้อมูล</span></td></tr>}</tbody>
+        <thead><tr>{columns.map((column) => <th key={column.key} onClick={() => toggleSelected(column.key)} title="คลิกเพื่อเลือกหลายคอลัมน์ แล้วลากขอบเพื่อปรับพร้อมกัน" className={[columnSignClass(column.key), column.key === 'netTotal' ? 'align-right' : '', selectedKeys.includes(column.key) ? 'selected-header' : '', !column.editable && column.editable !== undefined ? 'calculated-header' : '', column.type === 'special-position' ? 'special-position-header' : ''].filter(Boolean).join(' ')}><span className="column-header-label">{column.label}</span><span className="column-resizer" role="separator" aria-label={`ปรับความกว้างคอลัมน์ ${column.label}`} onClick={(event) => event.stopPropagation()} onMouseDown={(event) => startResize(event, column)} /></th>)}<th className="filler-header" aria-hidden="true" /><th className="action-header">จัดการ</th></tr></thead>
+        <tbody>{rows.length ? rows.map((row) => <DataTableRow key={row.id || `${sheet}-${row.sequence}-${row.employeeId}`} sheet={sheet} columns={columns} row={row} now={now} onEdit={onEdit} onInlineUpdate={onInlineUpdate} onDelete={onDelete} specialPositionOptions={specialPositionOptions} positionColorOptions={positionColorOptions} />) : <tr><td colSpan={columns.length + 2} className="empty-state"><span className="empty-icon">⌁</span><strong>ยังไม่มีข้อมูลในแท็บนี้</strong><span>กด “เพิ่มรายการ” เพื่อเริ่มบันทึกข้อมูล</span></td></tr>}</tbody>
       </table>
     </div>
   );
@@ -1930,14 +2336,31 @@ function AddPayrollRowsPage({ sheet, period, rates, existingEmployeeIds, onBack,
   );
 }
 
-function PayrollPeriodModal({ mode, initialName, period, rowCount, revisionCount, busy, onClose, onSubmit }) {
+function formatThaiDate(value) {
+  const [year, month, day] = String(value || '').split('-').map(Number);
+  if (!year || !month || !day) return '';
+  return `${day}/${month}/${year + 543}`;
+}
+
+// Returns the first existing period whose date range intersects [startDate, endDate] (inclusive, ISO yyyy-mm-dd).
+function findOverlappingPeriod(periods, startDate, endDate) {
+  if (!startDate || !endDate) return null;
+  return (periods || []).find((item) => item.startDate && item.endDate && startDate <= item.endDate && endDate >= item.startDate) || null;
+}
+
+function PayrollPeriodModal({ mode, initialName, period, rowCount, revisionCount, busy, existingPeriods = EMPTY_LIST, onClose, onSubmit }) {
   const [name, setName] = useState(initialName || '');
+  const [startDate, setStartDate] = useState('');
+  const [endDate, setEndDate] = useState('');
   const isSaveMode = mode === 'save';
+  const overlap = isSaveMode ? null : findOverlappingPeriod(existingPeriods, startDate, endDate);
+  const datesValid = Boolean(startDate && endDate && endDate >= startDate && !overlap);
+  const canSubmit = isSaveMode ? Boolean(name.trim()) : datesValid;
 
   const handleSubmit = (event) => {
     event.preventDefault();
-    if (!name.trim() || busy) return;
-    onSubmit(name.trim());
+    if (!canSubmit || busy) return;
+    onSubmit(isSaveMode ? name.trim() : { startDate, endDate });
   };
 
   return (
@@ -1947,19 +2370,33 @@ function PayrollPeriodModal({ mode, initialName, period, rowCount, revisionCount
           <div>
             <div className="eyebrow">{isSaveMode ? 'SAVE PAYROLL PERIOD' : 'NEW PAYROLL PERIOD'}</div>
             <h2 id="payroll-period-modal-title">{isSaveMode ? 'ตั้งชื่อ Revision' : 'เปิดงวดใหม่'}</h2>
-            <p className="period-modal-subtitle">{isSaveMode ? `งวด ${period?.name || 'ปัจจุบัน'} · ${rowCount} รายการ · เก็บข้อมูลทั้ง 3 แท็บ` : 'เริ่มงวดด้วยตารางว่าง แล้วกด “เพิ่มรายการ” เพื่อเลือกพนักงานทีละคนหรือทีละทีม'}</p>
+            <p className="period-modal-subtitle">{isSaveMode ? `งวด ${period?.name || 'ปัจจุบัน'} · ${rowCount} รายการ · เก็บข้อมูลทั้ง 3 แท็บ` : 'เลือกวันที่เริ่มต้นและสิ้นสุด ระบบจะคิดค่าแรงตามช่วงวันที่ที่กำหนด แล้วกด “เพิ่มรายการ” เพื่อเลือกพนักงาน'}</p>
           </div>
           <button className="close-button" onClick={onClose} disabled={busy}>×</button>
         </div>
         <form onSubmit={handleSubmit}>
           <div className="period-modal-content">
-            <label className="period-name-field">
-              <span>{isSaveMode ? 'ชื่อ Revision' : 'ชื่องวดใหม่'}</span>
-              <input autoFocus value={name} onChange={(event) => setName(event.target.value)} placeholder={isSaveMode ? 'เช่น ตรวจสอบรอบแรก' : 'เช่น งวดวันที่ 1–15 พ.ย. 2569'} maxLength={120} />
-            </label>
+            {isSaveMode ? (
+              <label className="period-name-field">
+                <span>ชื่อ Revision</span>
+                <input autoFocus value={name} onChange={(event) => setName(event.target.value)} placeholder="เช่น ตรวจสอบรอบแรก" maxLength={120} />
+              </label>
+            ) : (
+              <div className="period-date-fields" style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
+                <label className="period-name-field">
+                  <span>วันที่เริ่มต้น (Start)</span>
+                  <input type="date" autoFocus value={startDate} max={endDate || undefined} onChange={(event) => setStartDate(event.target.value)} required />
+                </label>
+                <label className="period-name-field">
+                  <span>วันที่สิ้นสุด (End)</span>
+                  <input type="date" value={endDate} min={startDate || undefined} onChange={(event) => setEndDate(event.target.value)} required />
+                </label>
+              </div>
+            )}
+            {overlap && <p className="form-error" role="alert" style={{ color: '#c0392b', margin: '8px 0 0' }}>วันที่ทับกับ “{overlap.name}” ({formatThaiDate(overlap.startDate)} – {formatThaiDate(overlap.endDate)}) กรุณาเลือกวันที่ที่ไม่ซ้อนกับงวดก่อนหน้า</p>}
             <div className="period-modal-info"><span>สถานะหลังบันทึก</span><strong>Savedraft</strong>{isSaveMode && <small>Revision เดิมจะยังคงอยู่ครบ · งวดนี้มี {revisionCount} Revision ก่อนหน้า</small>}</div>
           </div>
-          <div className="modal-footer"><button type="button" className="secondary-button" onClick={onClose} disabled={busy}>ยกเลิก</button><button type="submit" className="primary-button" disabled={busy || !name.trim()}>{busy ? 'กำลังบันทึก...' : isSaveMode ? 'บันทึก Revision' : 'เปิดงวดใหม่'}</button></div>
+          <div className="modal-footer"><button type="button" className="secondary-button" onClick={onClose} disabled={busy}>ยกเลิก</button><button type="submit" className="primary-button" disabled={busy || !canSubmit}>{busy ? 'กำลังบันทึก...' : isSaveMode ? 'บันทึก Revision' : 'เปิดงวดใหม่'}</button></div>
         </form>
       </section>
     </div>

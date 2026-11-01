@@ -41,6 +41,8 @@ export function AuthProvider({ children }) {
   // `loading` stays true until Firebase has checked the stored token AND the
   // first profile lookup has finished, so no page flashes the wrong screen.
   const [loading, setLoading] = useState(isFirebaseConfigured);
+  // Set when the profile can neither be read nor created (usually Firestore Rules).
+  const [profileError, setProfileError] = useState('');
   const email = firebaseUser?.email || '';
   const autoCreateTried = useRef('');
 
@@ -48,6 +50,12 @@ export function AuthProvider({ children }) {
     if (!isFirebaseConfigured) return undefined;
     let cancelled = false;
     const unsubscribe = watchAuthState(async (user) => {
+      // The previous version of the app signed everyone in anonymously. That
+      // leftover session has no email/profile, so drop it and show the login page.
+      if (user && (user.isAnonymous || !user.email)) {
+        await logout().catch(() => {});
+        return;
+      }
       if (user && isSessionExpired()) {
         clearSessionExpiry();
         await logout().catch(() => {});
@@ -81,6 +89,7 @@ export function AuthProvider({ children }) {
       email,
       async (profile) => {
         if (profile) {
+          setProfileError('');
           setUserProfile(profile);
           return;
         }
@@ -92,14 +101,24 @@ export function AuthProvider({ children }) {
           await createUserProfile(auth.currentUser);
         } catch (error) {
           console.warn('สร้างโปรไฟล์อัตโนมัติไม่สำเร็จ', error);
+          setProfileError(error?.code || error?.message || 'unknown');
         }
       },
-      (error) => console.warn('อ่านโปรไฟล์แบบเรียลไทม์ไม่สำเร็จ', error),
+      (error) => {
+        console.warn('อ่านโปรไฟล์แบบเรียลไทม์ไม่สำเร็จ', error);
+        setProfileError(error?.code || 'unknown');
+      },
     );
   }, [email]);
 
   // Forces a profile read; needed because onAuthStateChanged can fire before
   // createUserProfile has finished for a brand-new account.
+  const retryProfile = useCallback(() => {
+    autoCreateTried.current = '';
+    setProfileError('');
+    window.location.reload();
+  }, []);
+
   const refreshProfile = useCallback(async () => {
     if (!isFirebaseConfigured) return DEMO_PROFILE;
     const current = auth?.currentUser;
@@ -118,6 +137,8 @@ export function AuthProvider({ children }) {
     firebaseUser,
     userProfile,
     loading,
+    profileError,
+    retryProfile,
     roles: userProfile ? toRoleList(userProfile.role) : [],
     isMasterAdmin: isMasterAdmin(userProfile),
     canAccess: (moduleId) => canAccessModule(userProfile, moduleId),
@@ -127,7 +148,7 @@ export function AuthProvider({ children }) {
     loginWithGoogle,
     registerWithEmail,
     logout,
-  }), [firebaseUser, userProfile, loading, refreshProfile, updateMyProfile]);
+  }), [firebaseUser, userProfile, loading, profileError, retryProfile, refreshProfile, updateMyProfile]);
 
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;
 }

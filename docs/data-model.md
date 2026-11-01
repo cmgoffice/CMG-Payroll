@@ -176,12 +176,17 @@ CMG-Payroll/root
 ├── users/{email}            UserProfile (role เป็น array, status, assignedProjects)
 ├── appMeta/config           { firstUserRegistered, totalUsers, createdAt }
 ├── activityLogs/{id}        REGISTER / LOGIN
-└── projects/{projectId}     อยู่ layer เดียวกับ users
-    ├── rates / payroll / settings / payrollPeriods / deletedPayrollPeriods
+├── projects/{projectId}     อยู่ layer เดียวกับ users (Assign ให้ผู้ใช้เป็นรายคน)
+├── rates / payroll / settings / payrollPeriods / deletedPayrollPeriods   ← ข้อมูลกลาง ไม่ผูกโครงการ
 ```
 
 - ผู้ใช้คนแรกที่ลงชื่อเข้าใช้ (Firestore transaction) จะเป็น `MasterAdmin` + `approved` ที่เหลือเป็น `Staff` + `pending`
 - Role: `MasterAdmin` (ทุกอย่าง), `PayrollAdmin` (สรุปค่าแรง), `RateAdmin` (อัตราค่าแรง), `WageEntry` (Admin ลงค่าแรง), `Staff` (ภาพรวม) หลาย Role ได้สิทธิ์รวมกัน
-- ผู้ใช้เห็นเฉพาะโครงการที่ MasterAdmin Assign ให้ ข้อมูลทุกเมนูเก็บใต้ `projects/{projectId}` ของโครงการนั้น
-- ข้อมูลเดิม (ก่อนมีโครงการ) คัดลอกเข้าโครงการได้จากปุ่ม “นำเข้าข้อมูลเดิม” ในเมนูโครงการ (คัดลอกเท่านั้น ไม่ลบต้นฉบับ)
+- เมนู อัตราค่าแรง และ สรุปค่าแรง เป็นข้อมูลกลาง ไม่ผ่านโครงการ (เห็นเฉพาะ MasterAdmin) แยกหมวดใน Sidebar
+- ผู้ใช้เห็นเฉพาะโครงการที่ MasterAdmin Assign ให้ โมดูลอนาคตที่ผูกโครงการให้เก็บใต้ `projects/{projectId}`
 - ตัวอย่าง Firestore Rules อยู่ที่ `firestore.rules` และต้องเปิด Google + Email/Password ใน Firebase Authentication พร้อมเพิ่มโดเมนใน Authorized domains
+
+## UI layout rules
+
+- Data table pages must never show two vertical scrollbars. The page itself must not scroll; only the table (`.table-scroll`) scrolls, and its header row stays frozen (`position: sticky`).
+- Implemented in `src/styles.css` (section "Single scroll"): `.main-content` is locked to `100vh` when it contains `.dataset-page > .data-panel`, and the panel/table-scroll fill the remaining height with `min-height: 0`.

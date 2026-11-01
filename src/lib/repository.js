@@ -122,28 +122,13 @@ const sortRows = (rows) => [...rows].sort((a, b) => {
   return String(a.employeeId || '').localeCompare(String(b.employeeId || ''));
 });
 
-// Every module stores its data under the active project:
-// CMG-Payroll/root/projects/{projectId}/{rates|payroll|settings|payrollPeriods...}
-// The workspace is re-mounted per project, so this module-level id always
-// matches the project the user is looking at.
-export const PROJECTS_COLLECTION = 'projects';
-let activeProjectId = '';
-export const setActiveProject = (projectId) => { activeProjectId = projectId || ''; };
+// Rates, payroll and their settings are shared data: they do not belong to a project.
+const rootCollection = (name) => collection(db, FIREBASE_ROOT_COLLECTION, FIREBASE_ROOT_DOCUMENT, name);
 
-const projectDocument = () => {
-  if (!activeProjectId) {
-    const error = new Error('ยังไม่ได้เลือกโครงการ');
-    error.code = 'no-active-project';
-    throw error;
-  }
-  return doc(db, FIREBASE_ROOT_COLLECTION, FIREBASE_ROOT_DOCUMENT, PROJECTS_COLLECTION, activeProjectId);
-};
-const projectCollection = (name) => collection(projectDocument(), name);
-
-const categoryCollection = (category) => projectCollection(category);
-const settingsCollection = () => projectCollection('settings');
-const payrollPeriodsCollection = () => projectCollection(PAYROLL_PERIODS_COLLECTION);
-const deletedPayrollPeriodsCollection = () => projectCollection(DELETED_PAYROLL_PERIODS_COLLECTION);
+const categoryCollection = (category) => rootCollection(category);
+const settingsCollection = () => rootCollection('settings');
+const payrollPeriodsCollection = () => rootCollection(PAYROLL_PERIODS_COLLECTION);
+const deletedPayrollPeriodsCollection = () => rootCollection(DELETED_PAYROLL_PERIODS_COLLECTION);
 const readLocalDeletedPayrollPeriods = () => {
   if (typeof window === 'undefined') return [];
   try {
@@ -195,7 +180,7 @@ const normalizeSpecialPositionOptions = (options) => [...new Set((Array.isArray(
   .filter(Boolean))];
 
 export const subscribeToSpecialPositionOptions = ({ onData, onError }) => {
-  if (!isFirebaseConfigured || !activeProjectId) {
+  if (!isFirebaseConfigured) {
     onData?.(null);
     return () => {};
   }
@@ -244,7 +229,7 @@ export const saveSpecialPositionOptions = async (options = []) => {
 const normalizeColumnSettingsMap = (settings) => (settings && typeof settings === 'object' && !Array.isArray(settings) ? settings : {});
 
 export const subscribeToColumnSettings = ({ onData, onError }) => {
-  if (!isFirebaseConfigured || !activeProjectId) {
+  if (!isFirebaseConfigured) {
     onData?.(null);
     return () => {};
   }
@@ -291,7 +276,7 @@ const uploadAttachments = async ({ category, sheet, recordId, files }) => {
   if (!files?.length || !storage) return [];
 
   return Promise.all(files.map(async (file) => {
-    const path = `${FIREBASE_ROOT_COLLECTION}/${FIREBASE_ROOT_DOCUMENT}/${PROJECTS_COLLECTION}/${activeProjectId}/${category}/${sheet}/${recordId}/${Date.now()}-${safeFileName(file.name)}`;
+    const path = `${FIREBASE_ROOT_COLLECTION}/${FIREBASE_ROOT_DOCUMENT}/${category}/${sheet}/${recordId}/${Date.now()}-${safeFileName(file.name)}`;
     const fileRef = storageRef(storage, path);
     await uploadBytes(fileRef, file, { contentType: file.type || 'application/octet-stream' });
     const url = await getStorageDownloadURL(fileRef);
@@ -309,10 +294,6 @@ const uploadAttachments = async ({ category, sheet, recordId, files }) => {
 export const subscribeToDataset = ({ category, sheet, onData, onError }) => {
   if (!isFirebaseConfigured) {
     onData(sortRows(mockDatasets[category]?.[sheet] || []));
-    return () => {};
-  }
-  if (!activeProjectId) {
-    onData([]);
     return () => {};
   }
 
@@ -395,7 +376,7 @@ export const saveDatasetRecord = async ({ category, sheet, record, files = [], e
 };
 
 export const subscribeToPayrollRevisions = ({ periodId, onData, onError }) => {
-  if (!periodId || (isFirebaseConfigured && !activeProjectId)) {
+  if (!periodId) {
     onData?.([]);
     return () => {};
   }
@@ -471,10 +452,6 @@ export const subscribeToPayrollPeriods = ({ onData, onError }) => {
     onData?.(sortPayrollPeriods(readLocalPayrollPeriods().map(normalizePayrollPeriod)));
     return () => {};
   }
-  if (!activeProjectId) {
-    onData?.([]);
-    return () => {};
-  }
 
   let unsubscribe = () => {};
   let cancelled = false;
@@ -506,6 +483,12 @@ export const savePayrollPeriod = async (period) => {
   const payload = {
     periodId: period.id,
     name: period.name,
+    startDate: period.startDate || null,
+    endDate: period.endDate || null,
+    ...(typeof period.entryOpen === 'boolean' ? { entryOpen: period.entryOpen } : {}),
+    ...(Array.isArray(period.wageEntries) ? { wageEntries: period.wageEntries } : {}),
+    ...(Array.isArray(period.wageEmployees) ? { wageEmployees: period.wageEmployees } : {}),
+    ...(Array.isArray(period.draftRows) ? { draftRows: period.draftRows } : {}),
     status: period.status || PAYROLL_SAVEDRAFT_STATUS,
     createdAt: period.createdAt || now,
     updatedAt: period.updatedAt || now,
@@ -565,6 +548,8 @@ export const savePayrollRevision = async ({ period, revisionName, rows = [], rev
       id: period.id,
       periodId: period.id,
       name: period.name,
+      startDate: period.startDate || null,
+      endDate: period.endDate || null,
       status: PAYROLL_SAVEDRAFT_STATUS,
       activeRevisionId: revisionId,
       revisionCount,
@@ -580,6 +565,8 @@ export const savePayrollRevision = async ({ period, revisionName, rows = [], rev
   await withTimeout(setDoc(periodRef, {
     periodId: period.id,
     name: period.name,
+    startDate: period.startDate || null,
+    endDate: period.endDate || null,
     status: PAYROLL_SAVEDRAFT_STATUS,
     activeRevisionId: revisionId,
     revisionCount,
@@ -716,9 +703,7 @@ export const syncMasterEmployees = async ({ existingRowsBySheet = {} } = {}) => 
     if (!sheet) return;
 
     const existing = existingByEmployeeId.get(normalizedKey(employee.employeeId));
-    // Only working employees are imported. A stored row whose status changed is
-    // still updated so the table hides it instead of showing a stale status.
-    if (!existing && employee.employeeStatus !== WORKING_STATUS) return;
+    // Employees of every status are stored; isRowVisible hides non-working ones.
 
     const id = existing?.id || masterRecordId(sheet, employee.employeeId);
     const nameChangedFields = existing

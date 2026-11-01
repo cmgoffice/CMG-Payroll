@@ -1,0 +1,15 @@
+{
+  "projects": {
+    "default": "cmg-petty-cash-management"
+  },
+  "targets": {
+    "cmg-petty-cash-management": {
+      "hosting": {
+        "site-01": [
+          "cmg-payroll"
+        ]
+      }
+    }
+  },
+  "etags": {}
+}

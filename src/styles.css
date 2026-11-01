@@ -263,6 +263,10 @@ body {
 
 .data-table { table-layout: fixed; }
 .data-table-stage { position: relative; width: max-content; min-width: 100%; }
+/* Resizable tables: every data column keeps its exact pixel width; spare panel width goes to the empty filler column only. */
+.data-table-resizable th.filler-header, .data-table-resizable td.filler-cell { min-width: 0 !important; padding: 0 !important; border-right: 0 !important; overflow: hidden; }
+.data-table-resizable th.filler-header { cursor: default; }
+.data-table-resizable th.filler-header:hover { background: #f6eef5; }
 .column-resize-preview { position: absolute; top: 0; bottom: 0; z-index: 4; width: 2px; background: #d6337f; box-shadow: 0 0 0 1px rgba(214, 51, 127, .15), 0 0 12px rgba(214, 51, 127, .28); pointer-events: none; }
 .data-table th { position: relative; min-width: 28px; max-width: none; overflow: visible; }
 .data-table th:first-child { min-width: 28px; }
@@ -550,7 +554,7 @@ h1, h2, .modal-header h2 { color: var(--text-strong); }
 .period-modal-content { display: grid; gap: 14px; padding: 23px 25px; }
 .period-name-field { display: grid; gap: 7px; }
 .period-name-field > span, .period-modal-info > span { color: #66808c; font-size: 11px; }
-.period-name-field input { width: 100%; border: 1px solid #dfe8eb; border-radius: 8px; padding: 11px 12px; outline: 0; color: #284656; background: #fff; font-size: 13px; }
+.period-name-field input, .period-name-field select { width: 100%; border: 1px solid #dfe8eb; border-radius: 8px; padding: 11px 12px; outline: 0; color: #284656; background: #fff; font-size: 13px; }
 .period-name-field input:focus { border-color: #d6337f; box-shadow: 0 0 0 3px rgba(214, 51, 127, .1); }
 .period-modal-info { display: grid; grid-template-columns: auto auto; align-items: center; gap: 5px 9px; padding: 11px 12px; border: 1px solid rgba(214, 51, 127, .14); border-radius: 9px; background: rgba(255, 246, 251, .76); }
 .period-modal-info strong { color: #b22f70; font-size: 11px; }
@@ -643,3 +647,206 @@ h1, h2, .modal-header h2 { color: var(--text-strong); }
 .admin-wage-input { width: 78px; padding: 5px 7px; border: 1px solid #e0e8eb; border-radius: 6px; font-size: 11px; color: #173042; text-align: right; }
 .admin-wage-input:focus { outline: 0; border-color: #e8953e; box-shadow: 0 0 0 2px rgba(232, 149, 62, .15); }
 .period-title-name { color: #e8953e; }
+
+.period-entry-toggle { position: absolute; top: 12px; right: 14px; z-index: 1; padding: 3px 10px; border: 1px solid transparent; border-radius: 999px; font: inherit; font-size: 11px; font-weight: 800; cursor: pointer; }
+.period-entry-toggle.is-open { background: #e3f6ea; color: #1f8a4c; border-color: #b9e6c9; }
+.period-entry-toggle.is-closed { background: #f1ecef; color: #7a6872; border-color: #ddd2d8; }
+.period-entry-toggle:disabled { cursor: default; opacity: .6; }
+.period-card-wrap.has-toggle .period-card-current { display: none; }
+
+.wage-entry-form { display: grid; grid-template-columns: minmax(220px, 2fr) minmax(160px, 1fr) minmax(160px, 1fr) auto; gap: 12px; align-items: end; padding: 16px; }
+.wage-entry-form label { display: grid; gap: 4px; font-size: 11px; font-weight: 700; color: var(--text-muted); }
+.wage-entry-form input { padding: 9px 11px; border: 1px solid var(--line); border-radius: 10px; font: inherit; font-size: 13px; }
+.wage-entry-preview { display: grid; gap: 2px; padding-bottom: 6px; font-size: 12px; color: var(--text-muted); }
+.wage-entry-preview strong { color: var(--text-strong); }
+.wage-entry-error { margin: 0 16px 8px; padding: 8px 12px; border-radius: 8px; background: #fde8e8; color: #b23a3a; font-size: 12px; }
+
+.period-select { padding: 9px 11px; border: 1px solid var(--line); border-radius: 10px; background: #fff; font: inherit; font-size: 13px; min-width: 200px; }
+.clickable-row { cursor: pointer; }
+.clickable-row:hover td { background: rgba(214, 51, 127, .06); }
+.wage-sheet th, .wage-sheet td { border: 1px solid #c9c9c9; }
+.wage-sheet .wage-sheet-index th { background: #fff; color: #1a3cd8; font-size: 16px; text-align: center; }
+.wage-sheet .wage-sheet-head th { background: #ffeb00; color: #111; text-align: center; font-weight: 700; }
+.wage-sheet td { font-weight: 600; }
+
+/* Shifts page: document-register style table in the system palette */
+.shift-register { margin-top: 12px; border: 1px solid var(--glass-border); border-radius: 16px; background: var(--glass-bg-strong); overflow: hidden; }
+.shift-register-head { display: flex; align-items: center; gap: 12px; padding: 14px 18px; border-bottom: 1px solid var(--line); }
+.shift-register-head h2 { margin: 0; font-size: 15px; color: var(--text-strong); }
+.shift-register-head h2 small { margin-left: 8px; font-size: 11px; font-weight: 500; color: var(--text-faint); }
+.shift-register-search { flex: 1; display: flex; align-items: center; gap: 8px; height: 34px; padding: 0 12px; border: 1px solid var(--glass-border); border-radius: 10px; background: #fff; color: var(--text-faint); }
+.shift-register-search input { flex: 1; border: 0; outline: 0; background: transparent; font-size: 12px; color: var(--text); }
+.shift-register-search:focus-within { border-color: var(--glass-border-strong); }
+.shift-register .table-scroll { padding: 0 8px 8px; }
+.shift-register table { width: 100%; border-collapse: collapse; font-size: 12px; table-layout: auto; }
+.shift-register thead th { position: static; padding: 12px 14px; background: transparent !important; border: 0 !important; border-bottom: 1px solid var(--glass-border) !important; color: var(--text-muted) !important; font-size: 11px; font-weight: 700; letter-spacing: .06em; text-align: left; text-transform: uppercase; cursor: default; }
+.shift-register tbody td { padding: 10px 14px; border: 0 !important; border-bottom: 1px solid var(--line) !important; background: transparent; color: var(--text); white-space: nowrap; }
+.shift-register tbody tr:last-child td { border-bottom: 0 !important; }
+.shift-register tbody tr:hover td { background: var(--accent-soft); }
+.shift-register .shift-name { color: var(--text-strong); font-weight: 600; }
+.shift-register .shift-time { font-family: ui-monospace, Consolas, monospace; font-size: 12px; color: var(--accent); }
+.shift-register .shift-pill { display: inline-block; padding: 2px 9px; border-radius: 6px; background: var(--accent-soft); color: #b22f70; font-size: 11px; font-weight: 700; }
+.shift-register .shift-pill.default { background: #e8f5ee; color: #1f6b45; }
+.shift-register .shift-empty { padding: 28px 14px; text-align: center; color: var(--text-faint); }
+.shift-register .shift-actions { display: flex; gap: 12px; }
+
+/* Shifts page: compact pass */
+.shift-register { margin-top: 10px; border-radius: 12px; }
+.shift-register-head { padding: 9px 14px; gap: 10px; }
+.shift-register-head h2 { font-size: 13px; white-space: nowrap; }
+.shift-register-head h2 small { font-size: 10.5px; }
+.shift-register-search { flex: 0 1 240px; height: 28px; margin-right: auto; border-radius: 8px; }
+.shift-register-search input { font-size: 11.5px; }
+.shift-register-head .primary-button { height: 28px; padding: 0 12px; font-size: 11.5px; border-radius: 8px; box-shadow: none; }
+.shift-register .table-scroll { padding: 0; }
+.shift-register thead th { padding: 7px 14px; font-size: 10px; background: rgba(120, 80, 140, .04) !important; }
+.shift-register tbody td { padding: 6px 14px; font-size: 12px; }
+.shift-register th:nth-child(1) { width: 22%; }
+.shift-register th:nth-child(2), .shift-register th:nth-child(3), .shift-register th:nth-child(4) { width: 90px; }
+.shift-register th:nth-child(6) { width: 150px; }
+.shift-register th:nth-child(7) { width: 110px; }
+.shift-register .shift-empty { padding: 12px 14px; text-align: left; font-size: 11.5px; }
+.shift-register .shift-pill { padding: 1px 8px; font-size: 10.5px; }
+
+/* Shifts page: show ~3 rows, scroll the rest */
+.shift-register .table-scroll.shift-scroll, .dataset-page .shift-register .table-scroll.shift-scroll { min-height: 0; max-height: 132px; overflow-y: auto; }
+.shift-register thead th { position: sticky; top: 0; z-index: 1; background: #f7f3f9 !important; }
+
+/* Shifts page: 3 project tables per row */
+.shift-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; align-items: start; margin-top: 10px; }
+@media (max-width: 1280px) { .shift-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+@media (max-width: 800px) { .shift-grid { grid-template-columns: minmax(0, 1fr); } }
+.shift-grid .shift-register { margin-top: 0; min-width: 0; }
+.shift-grid .shift-register-head { flex-wrap: wrap; row-gap: 8px; }
+.shift-grid .shift-register-head h2 { flex: 1 1 100%; overflow: hidden; text-overflow: ellipsis; }
+.shift-grid .shift-register-search { flex: 1 1 0; min-width: 0; margin-right: 0; }
+.shift-register .table-scroll.shift-scroll, .dataset-page .shift-register .table-scroll.shift-scroll { max-height: none; overflow-x: auto; }
+.shift-register thead th { position: static; }
+.shift-register th:nth-child(1) { width: auto; }
+.shift-register th:nth-child(2), .shift-register th:nth-child(3), .shift-register th:nth-child(4) { width: 62px; }
+.shift-register th:nth-child(5) { width: 92px; }
+.shift-register th:nth-child(6) { width: 78px; }
+.shift-register thead th, .shift-register tbody td { padding-left: 10px; padding-right: 10px; }
+.shift-register .shift-note { display: block; margin-top: 1px; font-size: 10.5px; font-weight: 400; color: var(--text-faint); white-space: normal; }
+.shift-register .shift-actions { gap: 8px; }
+
+/* Shift modal: compact fields */
+.shift-modal { width: min(400px, calc(100vw - 32px)); }
+.shift-modal .modal-header { padding: 14px 18px 10px; }
+.shift-modal .modal-header h2 { font-size: 16px; }
+.shift-modal .period-modal-content { gap: 10px; padding: 12px 18px; }
+.shift-modal .period-name-field { gap: 4px; }
+.shift-modal .period-name-field > span { font-size: 10.5px; }
+.shift-modal .period-name-field input, .shift-modal .period-name-field select { padding: 6px 10px; font-size: 12px; border-radius: 7px; }
+.shift-modal .modal-footer { padding: 10px 18px; }
+.shift-modal .modal-footer button { padding: 6px 14px; font-size: 12px; }
+.shift-modal .import-summary-file { margin: 0; font-size: 10.5px; }
+
+/* Compact table rows (~29px) */
+.data-table tbody td { padding-top: 3px; padding-bottom: 3px; line-height: 1.2; }
+.data-table td.special-position-cell { padding: 2px 7px; }
+.data-table td.special-position-cell .special-position-editor select,
+.data-table td.special-position-cell .special-amount-input input { padding-top: 2px; padding-bottom: 2px; height: 22px; line-height: 1.2; }
+.data-table tbody td .badge, .data-table tbody td .chip, .data-table tbody td .pill, .data-table tbody td [class*="badge"], .data-table tbody td [class*="pill"] { padding-top: 1px; padding-bottom: 1px; line-height: 1.3; }
+.data-table tbody td button { padding-top: 2px; padding-bottom: 2px; line-height: 1.2; }
+
+/* Compact header area: topbar, source bar, tabs, panel toolbar, table head */
+.topbar { height: 40px !important; min-height: 0 !important; padding: 0 20px !important; }
+.dataset-page.page-content, .page-content.dataset-page { padding-top: 8px !important; }
+.dataset-page .source-row, .dataset-page .page-heading-row { margin: 0 0 6px !important; gap: 8px; }
+.dataset-page .source-banner { margin-top: 0 !important; padding: 4px 10px !important; }
+.dataset-page .dataset-actions button, .dataset-page .sync-button { padding-top: 4px !important; padding-bottom: 4px !important; }
+.dataset-page .tabs { margin: 0 !important; }
+.dataset-page .tab-button { padding-top: 5px !important; padding-bottom: 5px !important; }
+.data-panel-toolbar { padding: 6px 14px !important; align-items: center !important; }
+.data-panel-toolbar h2 { font-size: 15px !important; margin: 0 !important; }
+.data-panel-toolbar p { display: none !important; }
+.data-panel-toolbar .toolbar-controls { gap: 6px; }
+.data-panel-toolbar .toolbar-controls button, .data-panel-toolbar .search-box, .data-panel-toolbar .filter-button { min-height: 0 !important; padding-top: 4px !important; padding-bottom: 4px !important; }
+.data-panel-toolbar .search-box input { padding-top: 2px !important; padding-bottom: 2px !important; }
+.table-summary { padding: 3px 16px !important; font-size: 11px; }
+.data-table thead th { padding: 5px 10px !important; font-size: 11px !important; line-height: 1.2 !important; height: 32px; }
+.data-table thead th .column-header-label { line-height: 1.2 !important; }
+.dataset-page .source-row { align-items: flex-end !important; justify-content: space-between; }
+.dataset-page .source-row .tabs { flex: 0 0 auto; }
+
+/* Freeze table header while scrolling */
+.data-panel .table-scroll { max-height: calc(100vh - 230px); }
+.data-table thead th, .data-table thead th.calculated-header, .data-table thead th.special-position-header { position: sticky !important; top: 0; z-index: 5; }
+.data-table thead th.selected-header { z-index: 6; }
+
+/* Single scroll: pages with a data table fit the viewport; only the table scrolls */
+.main-content:has(.dataset-page > .data-panel) { display: flex; flex-direction: column; height: 100vh; overflow: hidden; }
+.main-content:has(.dataset-page > .data-panel) > .topbar { flex: 0 0 auto; }
+.dataset-page:has(> .data-panel) { flex: 1 1 auto; min-height: 0; display: flex; flex-direction: column; overflow: hidden; }
+.dataset-page:has(> .data-panel) > * { flex: 0 0 auto; }
+.dataset-page > .data-panel { flex: 1 1 auto; min-height: 0; display: flex; flex-direction: column; }
+.dataset-page > .data-panel > * { flex: 0 0 auto; }
+.dataset-page > .data-panel > .table-scroll { flex: 1 1 auto; min-height: 0; max-height: none; }
+
+/* All tables share the compact data-table sizing (users, shifts, projects) */
+.data-table .user-cell { gap: 8px; }
+.data-table .user-cell .avatar, .data-table .user-cell > :first-child:not(div) { width: 22px; height: 22px; font-size: 10px; }
+.data-table .user-cell > div { gap: 0; }
+.data-table .user-cell small { font-size: 10px; }
+.data-table td.user-actions { white-space: nowrap; }
+.data-table tbody td .primary-button, .data-table tbody td .secondary-button, .data-table tbody td .text-button { padding: 2px 8px !important; font-size: 10px !important; line-height: 1.2; }
+.data-table tbody td .role-chip, .data-table tbody td .status-badge, .data-table tbody td .shift-pill { padding-top: 1px; padding-bottom: 1px; line-height: 1.3; font-size: 10px; }
+.data-table tbody td .shift-note { display: inline; margin-left: 6px; }
+.shift-register tbody td { padding-top: 3px !important; padding-bottom: 3px !important; font-size: 10px; }
+.shift-register thead th { padding: 5px 10px !important; }
+
+/* Fixed outer size: resizing columns scrolls inside the table, never resizes the page/panel */
+.main-content > .page-content { width: 100%; min-width: 0; max-width: none; margin: 0; box-sizing: border-box; }
+.data-panel { min-width: 0; max-width: 100%; }
+.data-panel .table-scroll { max-width: 100%; overflow-x: auto; }
+.data-table thead th .column-header-label { word-break: normal; overflow-wrap: normal; }
+
+.wage-add-modal { width: min(820px, 94vw); max-width: 820px; }
+.wage-add-modal .wage-add-table { margin-top: 12px; }
+.wage-add-modal .add-rows-scroll { max-height: 50vh; min-height: 200px; }
+.wage-add-modal .wage-add-count { margin-right: auto; font-size: 12px; color: var(--text-strong); align-self: center; }
+.wage-add-modal .add-rows-row { grid-template-columns: 24px 80px minmax(0, 1.3fr) minmax(0, 1.4fr) minmax(0, 0.8fr); gap: 8px; padding: 4px 12px; line-height: 1.3; }
+.wage-add-modal .add-rows-row > * { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.wage-add-modal .add-rows-row input[type="checkbox"] { margin: 0; }
+.wage-add-modal { width: min(920px, 96vw); max-width: 920px; }
+.wage-employee-title { display: flex; align-items: baseline; gap: 14px; flex-wrap: wrap; margin-top: 6px; }
+.wage-entry-inline { display: flex; align-items: center; gap: 12px; padding: 0; border: 0; background: none; }
+.wage-entry-inline .wage-entry-preview { white-space: nowrap; }
+.wage-type-checks { display: flex; align-items: center; gap: 16px; font-size: 12px; }
+.wage-type-checks label { display: inline-flex; align-items: center; gap: 6px; font-weight: 600; cursor: pointer; white-space: nowrap; }
+.wage-request-types { display: flex; flex-wrap: wrap; gap: 4px; }
+.wage-type-chip { padding: 2px 8px; border-radius: 10px; font-size: 11px; background: #f5ebf3; color: #7a2a63; }
+.wage-type-chip.drop { background: #fdeceb; color: #b3372f; }
+.wage-status-badge { padding: 2px 10px; border-radius: 10px; font-size: 11px; font-weight: 600; }
+.wage-status-badge.pending { background: #fff4d6; color: #8a6200; }
+.wage-status-badge.approved { background: #e0f5e6; color: #1d7a3a; }
+.wage-status-badge.rejected { background: #fdeceb; color: #b3372f; }
+.wage-entry-actions { display: flex; gap: 6px; align-items: center; }
+.row-approve-button, .row-reject-button { border: 1px solid; border-radius: 6px; background: #fff; font-size: 11px; padding: 2px 8px; cursor: pointer; }
+.row-approve-button { color: #1d7a3a; border-color: #1d7a3a; }
+.row-reject-button { color: #b3372f; border-color: #b3372f; }
+.wage-edit-modal { width: min(460px, 94vw); }
+.wage-edit-body { display: grid; gap: 18px; text-align: left; }
+.wage-edit-field { display: grid; gap: 8px; font-size: 12px; font-weight: 700; text-align: left; }
+.wage-edit-field input[type="date"] { width: 100%; box-sizing: border-box; padding: 10px 12px; border: 1px solid var(--line); border-radius: 10px; font: inherit; font-size: 14px; font-weight: 500; background: #fff; }
+.wage-edit-types { display: grid; gap: 8px; }
+.wage-edit-types label { display: flex; align-items: center; gap: 12px; padding: 10px 14px; border: 1px solid var(--line); border-radius: 12px; background: #fff; cursor: pointer; font-weight: 500; }
+.wage-edit-types label.checked { border-color: #d6337f; background: #fdf1f7; }
+.wage-edit-types input { width: 18px; height: 18px; accent-color: #d6337f; flex: none; margin: 0; }
+.wage-edit-types strong { display: block; font-size: 13px; }
+.wage-edit-types small { display: block; margin-top: 2px; font-size: 11px; color: #7b6d88; }
+.wage-edit-note { padding: 10px 14px; border-radius: 10px; background: #f3eff7; color: #5a4a66; font-size: 12px; font-weight: 500; }
+.wage-edit-note.reject { background: #fdeceb; color: #b3372f; }
+.wage-edit-note strong { display: block; margin-bottom: 2px; }
+.wage-status-cell { display: flex; flex-direction: column; align-items: flex-start; gap: 3px; }
+.wage-reject-reason { font-size: 11px; color: #b3372f; max-width: 100%; white-space: normal; }
+.row-icon-button { border: 0; background: none; cursor: pointer; font-size: 14px; padding: 2px 4px; color: #5a4a66; }
+.row-icon-button.danger { color: #d64545; }
+.row-icon-button:hover { background: #f5ebf3; border-radius: 4px; }
+.name-link { border: 0; background: none; padding: 0; font: inherit; color: inherit; font-weight: 700; cursor: pointer; text-align: left; }
+.name-link:hover { color: var(--accent, #d6337f); text-decoration: underline; }
+.wage-add-options { display: flex; align-items: flex-end; gap: 24px; margin-bottom: 12px; flex-wrap: wrap; }
+.wage-add-options label { display: grid; gap: 4px; font-size: 11px; font-weight: 700; }
+.wage-add-options input[type="date"] { padding: 8px 10px; border: 1px solid var(--line); border-radius: 10px; font: inherit; font-size: 13px; }
+.wage-add-label { display: block; margin-bottom: 8px; font-size: 11px; font-weight: 700; }

@@ -3,7 +3,7 @@ import { createPortal } from 'react-dom';
 import { useAuth } from './AuthContext';
 import { ROLES, ROLE_LABELS, STATUS_LABELS, displayNameOf, initialOf, toRoleList } from './constants';
 import { navigate } from './router';
-import { createProject, archiveProject, importLegacyDataIntoProject, updateProject } from './projectService';
+import { PROJECT_STATUSES, addProjectsFromRates, archiveProject, createProject, pendingProjectNames, updateProject } from './projectService';
 import { setUserStatus, updateUserByAdmin } from './userService';
 
 export const DROPDOWN_LAYER = 10010;
@@ -194,7 +194,10 @@ function UserEditModal({ user, projects, isSelf, onClose, onNotify }) {
   const [draft, setDraft] = useState(user);
   const [saving, setSaving] = useState(false);
   const set = (key) => (value) => setDraft((current) => ({ ...current, [key]: value }));
-  const projectOptions = useMemo(() => projects.map((project) => ({ value: project.id, label: project.name })), [projects]);
+  // Disabled projects cannot be newly assigned; ones already assigned stay listed so they can be removed.
+  const projectOptions = useMemo(() => projects
+    .filter((project) => project.status !== 'Disable' || (draft.assignedProjects || []).includes(project.id))
+    .map((project) => ({ value: project.id, label: project.status === 'Disable' ? `${project.name} (Disable)` : project.name })), [projects, draft.assignedProjects]);
 
   const save = async (event) => {
     event.preventDefault();
@@ -288,7 +291,7 @@ export function UserManagementPage({ users, projects, loaded, onNotify }) {
 
       <section className="data-panel">
         <div className="table-scroll">
-          <table className="user-table">
+          <table className="data-table">
             <thead><tr><th>ผู้ใช้</th><th>ตำแหน่ง</th><th>Role</th><th>โครงการ</th><th>สถานะ</th><th /></tr></thead>
             <tbody>
               {visible.map((user) => (
@@ -321,7 +324,7 @@ export function UserManagementPage({ users, projects, loaded, onNotify }) {
 // -------------------------------------------------------------- projects -----
 
 function ProjectEditModal({ project, onClose, onSave }) {
-  const [form, setForm] = useState({ name: project?.name || '', code: project?.code || '', description: project?.description || '' });
+  const [form, setForm] = useState({ name: project?.name || '', code: project?.code || '', description: project?.description || '', status: project?.status === 'Disable' ? 'Disable' : 'Active' });
   const [saving, setSaving] = useState(false);
   const set = (key) => (event) => setForm((current) => ({ ...current, [key]: event.target.value }));
   const submit = async (event) => {
@@ -342,6 +345,7 @@ function ProjectEditModal({ project, onClose, onSave }) {
           <label className="full-field"><span>ชื่อโครงการ</span><input required value={form.name} onChange={set('name')} /></label>
           <label><span>รหัสโครงการ</span><input value={form.code} onChange={set('code')} /></label>
           <label className="full-field"><span>รายละเอียด</span><input value={form.description} onChange={set('description')} /></label>
+          <label><span>สถานะ</span><select value={form.status} onChange={set('status')}>{PROJECT_STATUSES.map((value) => <option key={value} value={value}>{value}</option>)}</select></label>
         </div></div>
         <div className="modal-footer"><button type="button" className="secondary-button" onClick={onClose} disabled={saving}>ยกเลิก</button><button type="submit" className="primary-button" disabled={saving}>{saving ? 'กำลังบันทึก...' : 'บันทึก'}</button></div>
       </form>
@@ -349,19 +353,24 @@ function ProjectEditModal({ project, onClose, onSave }) {
   );
 }
 
-export function ProjectsPage({ projects, activeProjectId, onSelect, onOpen, onNotify }) {
+export function ProjectsPage({ projects, rateRows = [], onNotify }) {
   const { userProfile, isMasterAdmin } = useAuth();
   const [editing, setEditing] = useState(null); // null | 'new' | project
-  const [busyId, setBusyId] = useState('');
+  const [refreshing, setRefreshing] = useState(false);
+  const [search, setSearch] = useState('');
+  const shownProjects = useMemo(() => {
+    const q = search.trim().toLowerCase();
+    return q ? projects.filter((project) => [project.code, project.name, project.description, project.status].some((v) => String(v || '').toLowerCase().includes(q))) : projects;
+  }, [projects, search]);
+  const pendingCount = useMemo(() => pendingProjectNames(rateRows, projects).length, [rateRows, projects]);
 
   const save = async (form) => {
     try {
       if (editing === 'new') {
-        const id = await createProject(form, userProfile);
-        onSelect(id);
+        await createProject(form, userProfile);
         onNotify('เพิ่มโครงการแล้ว');
       } else {
-        const changes = Object.fromEntries(Object.keys(form).filter((key) => form[key] !== (editing[key] || '')).map((key) => [key, form[key]]));
+        const changes = Object.fromEntries(Object.keys(form).filter((key) => form[key] !== (editing[key] || (key === 'status' ? 'Active' : ''))).map((key) => [key, form[key]]));
         if (Object.keys(changes).length) await updateProject(editing.id, changes);
         onNotify('บันทึกโครงการแล้ว');
       }
@@ -383,61 +392,59 @@ export function ProjectsPage({ projects, activeProjectId, onSelect, onOpen, onNo
     }
   };
 
-  const importLegacy = async (project) => {
-    if (!window.confirm(`คัดลอกข้อมูลเดิม (อัตราค่าแรง/สรุปค่าแรง/ตั้งค่า) เข้าโครงการ “${project.name}”?\nข้อมูลเดิมจะไม่ถูกลบ`)) return;
-    setBusyId(project.id);
+  const refresh = async () => {
+    if (refreshing) return;
+    setRefreshing(true);
     try {
-      const count = await importLegacyDataIntoProject(project.id);
-      onNotify(`คัดลอกข้อมูลเดิมแล้ว ${count} รายการ`);
+      const added = await addProjectsFromRates(rateRows, userProfile);
+      onNotify(added ? `เพิ่มโครงการใหม่ ${added} รายการ` : 'ไม่มีโครงการใหม่');
     } catch (error) {
-      console.error('ไม่สามารถนำเข้าข้อมูลเดิม', error);
-      onNotify(error?.code === 'target-not-empty' ? 'โครงการนี้มีข้อมูลอยู่แล้ว' : 'นำเข้าข้อมูลเดิมไม่สำเร็จ');
+      console.error('ไม่สามารถดึงข้อมูลสถานะโครงการ', error);
+      onNotify('ดึงข้อมูลสถานะโครงการไม่สำเร็จ');
     } finally {
-      setBusyId('');
+      setRefreshing(false);
     }
   };
 
   return (
     <div className="page-content dataset-page">
       <section className="page-heading-row">
-        <div><div className="eyebrow">PROJECTS</div><h1>โครงการ</h1><p className="page-description">{isMasterAdmin ? 'สร้างโครงการ แล้วไป Assign ให้ผู้ใช้ที่เมนูจัดการผู้ใช้งาน — ข้อมูลของแต่ละโครงการแยกกัน' : 'โครงการที่ MasterAdmin กำหนดให้คุณ'}</p></div>
-        {isMasterAdmin && <div className="page-heading-actions"><button type="button" className="primary-button" onClick={() => setEditing('new')}>＋ เพิ่มโครงการ</button></div>}
+        <div><div className="eyebrow">PROJECTS</div><h1>โครงการ</h1><p className="page-description">{isMasterAdmin ? `ดึงสถานะโครงการจากอัตราค่าแรง (ไม่ซ้ำ) มาเก็บไว้ที่นี่ · โครงการที่เก็บแล้วจะไม่ถูกลบ · รอเพิ่ม ${pendingCount} รายการ` : 'โครงการที่ MasterAdmin กำหนดให้คุณ'}</p></div>
+        {isMasterAdmin && <div className="page-heading-actions">
+          <button type="button" className="secondary-button" onClick={refresh} disabled={refreshing}>↻ {refreshing ? 'กำลังดึงข้อมูล...' : 'Refresh'}</button>
+          <button type="button" className="primary-button" onClick={() => setEditing('new')}>＋ เพิ่มโครงการ</button>
+        </div>}
       </section>
       {projects.length ? (
-        <div className="period-card-grid">
-          {projects.map((project) => (
-            <div key={project.id} className={`project-card ${project.id === activeProjectId ? 'is-current' : ''}`}>
-              <div className="project-card-top"><span className="period-card-status">{project.code || 'PROJECT'}</span>{project.id === activeProjectId && <span className="period-card-current">กำลังใช้งาน</span>}</div>
-              <strong className="period-card-name">{project.name}</strong>
-              <p>{project.description || 'ไม่มีรายละเอียด'}</p>
-              <div className="project-card-actions">
-                <button type="button" className="primary-button" onClick={() => { onSelect(project.id); onOpen(); }}>เปิดโครงการ</button>
-                {isMasterAdmin && <>
-                  <button type="button" className="secondary-button" onClick={() => setEditing(project)}>แก้ไข</button>
-                  <button type="button" className="secondary-button" disabled={busyId === project.id} onClick={() => importLegacy(project)}>{busyId === project.id ? 'กำลังคัดลอก...' : 'นำเข้าข้อมูลเดิม'}</button>
-                  <button type="button" className="secondary-button" onClick={() => archive(project)}>ซ่อน</button>
-                </>}
-              </div>
-            </div>
-          ))}
-        </div>
+        <section className="data-panel">
+          <div className="data-panel-toolbar"><div><h2>โครงการ <span className="tab-count">{projects.length}</span></h2></div><div className="toolbar-controls"><div className="search-box"><span>⌕</span><input value={search} onChange={(event) => setSearch(event.target.value)} placeholder="ค้นหาโครงการ..." /></div></div></div>
+          <div className="table-scroll">
+            <table className="data-table">
+              <colgroup><col style={{ width: 150 }} /><col style={{ width: '32%' }} /><col /><col style={{ width: 110 }} />{isMasterAdmin && <col style={{ width: 130 }} />}</colgroup>
+              <thead><tr><th>รหัส</th><th>ชื่อโครงการ</th><th>รายละเอียด</th><th>สถานะ</th>{isMasterAdmin && <th>จัดการ</th>}</tr></thead>
+              <tbody>
+                {shownProjects.map((project) => (
+                  <tr key={project.id}>
+                    <td>{project.code ? <strong className="employee-code">{project.code}</strong> : <span className="muted">-</span>}</td>
+                    <td className="name-cell">{project.name}</td>
+                    <td>{project.description || <span className="muted">-</span>}</td>
+                    <td><span className={`status-badge ${project.status === 'Disable' ? 'rejected' : 'approved'}`}>{project.status === 'Disable' ? 'Disable' : 'Active'}</span></td>
+                    {isMasterAdmin && <td className="action-cell">
+                      <button type="button" className="row-edit-button" onClick={() => setEditing(project)}>แก้ไข</button>{' '}
+                      <button type="button" className="row-delete-button" onClick={() => archive(project)}>ซ่อน</button>
+                    </td>}
+                  </tr>
+                ))}
+                {!shownProjects.length && <tr><td colSpan={isMasterAdmin ? 5 : 4} className="muted">ไม่พบโครงการที่ค้นหา</td></tr>}
+              </tbody>
+            </table>
+          </div>
+          <div className="data-panel-footer"><span>ทั้งหมด {projects.length} โครงการ{search.trim() ? ` · แสดง ${shownProjects.length}` : ''}</span></div>
+        </section>
       ) : (
-        <div className="period-empty"><strong>{isMasterAdmin ? 'ยังไม่มีโครงการ' : 'ยังไม่ได้รับมอบหมายโครงการ'}</strong><span>{isMasterAdmin ? 'กด “เพิ่มโครงการ” เพื่อสร้างโครงการแรก' : 'กรุณาติดต่อ MasterAdmin เพื่อกำหนดโครงการให้คุณ'}</span></div>
+        <div className="period-empty"><strong>{isMasterAdmin ? 'ยังไม่มีโครงการ' : 'ยังไม่ได้รับมอบหมายโครงการ'}</strong><span>{isMasterAdmin ? 'กด Refresh เพื่อดึงโครงการจากอัตราค่าแรง หรือกด “เพิ่มโครงการ”' : 'กรุณาติดต่อ MasterAdmin เพื่อกำหนดโครงการให้คุณ'}</span></div>
       )}
       {editing && <ProjectEditModal project={editing === 'new' ? null : editing} onClose={() => setEditing(null)} onSave={save} />}
-    </div>
-  );
-}
-
-export function NoProjectNotice({ onOpenProjects }) {
-  const { isMasterAdmin } = useAuth();
-  return (
-    <div className="page-content dataset-page">
-      <div className="period-empty">
-        <strong>{isMasterAdmin ? 'ยังไม่มีโครงการ' : 'ยังไม่ได้รับมอบหมายโครงการ'}</strong>
-        <span>{isMasterAdmin ? 'สร้างโครงการก่อนเพื่อเริ่มบันทึกข้อมูล' : 'กรุณาติดต่อ MasterAdmin เพื่อกำหนดโครงการให้คุณ'}</span>
-        {isMasterAdmin && <button type="button" className="primary-button" onClick={onOpenProjects}>ไปที่เมนูโครงการ</button>}
-      </div>
     </div>
   );
 }

@@ -12,10 +12,13 @@ const commonPayrollColumns = [
   { key: 'holidayHours', label: 'OT ชม.วันหยุด', type: 'number' },
   { key: 'dailyRate', label: 'อัตราค่าแรง', type: 'currency', editable: false },
   { key: 'travelRate', label: 'ค่าเดินทาง', type: 'mixed', editable: false },
-  { key: 'positionAllowance', label: 'ค่าตำแหน่ง', type: 'currency', editable: false },
+  { key: 'positionAllowance', label: 'ค่าตำแหน่งพิเศษ', type: 'currency', editable: false },
   { key: 'phoneAllowance', label: 'ค่าโทรศัพท์', type: 'currency', editable: false },
   { key: 'overtimeRate15', label: 'อัตรา OT 1.5', type: 'currency', editable: false },
-  { key: 'contractWork', label: 'งานเหมา', type: 'currency' },
+  { key: 'overtime2SundayAmount', label: 'ยอด OT 2 อาทิตย์', type: 'currency', editable: false },
+  { key: 'overtime2HolidayAmount', label: 'ยอด OT 2 วันหยุด', type: 'currency', editable: false },
+  { key: 'holidayHoursAmount', label: 'ยอด OT ชม.วันหยุด', type: 'currency', editable: false },
+  { key: 'contractWork', label: 'งานเหมา', type: 'currency', editable: false },
   { key: 'wageDrop', label: 'ค่าแรงตก', type: 'currency' },
   { key: 'deduction', label: 'หักเงิน', type: 'currency' },
   { key: 'socialSecurity', label: 'ประกันสังคม', type: 'currency', editable: false },
@@ -136,9 +139,10 @@ export const sourceCatalog = {
 
 export const menuItems = [
   { id: 'projects', label: 'โครงการ', shortLabel: 'โครงการ' },
-  { id: 'rates', label: 'อัตราค่าแรง', shortLabel: 'อัตรา' },
-  { id: 'payroll', label: 'สรุปค่าแรง', shortLabel: 'ค่าแรง' },
-  { id: 'adminWage', label: 'Admin ลงค่าแรง', shortLabel: 'ลงค่าแรง' },
+  { id: 'rates', label: 'อัตราค่าแรง', shortLabel: 'อัตรา', group: 'global' },
+  { id: 'payroll', label: 'สรุปค่าแรง', shortLabel: 'ค่าแรง', group: 'global' },
+  { id: 'adminWage', label: 'Admin ลงค่าแรง', shortLabel: 'ลงค่าแรง', group: 'wage' },
+  { id: 'shifts', label: 'กะการทำงาน', shortLabel: 'กะ', group: 'wage' },
   { id: 'overview', label: 'ภาพรวม', shortLabel: 'ภาพรวม' },
 ];
 

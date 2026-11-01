@@ -3,9 +3,7 @@ import {
   collection,
   doc,
   getDocs,
-  limit,
   onSnapshot,
-  query,
   setDoc,
   updateDoc,
   writeBatch,
@@ -14,10 +12,13 @@ import { db } from '../lib/firebase';
 import { APP_NAME } from './constants';
 
 // Projects live at `CMG-Payroll/root/projects/{projectId}`, the same layer as
-// `users`. Every module stores its data below its own project document, so a
-// user who is not assigned to a project can neither see nor read that data.
+// `users`. A user only sees the projects a MasterAdmin assigned to them.
 export const projectsCollection = () => collection(db, APP_NAME, 'root', 'projects');
 export const projectDocRef = (projectId) => doc(projectsCollection(), projectId);
+
+export const PROJECT_STATUSES = ['Active', 'Disable'];
+// Projects without a status (created before statuses existed) count as Active.
+export const isProjectEnabled = (project) => project.status !== 'Disable';
 
 const toProject = (snapshot) => ({ id: snapshot.id, ...snapshot.data() });
 const byName = (a, b) => String(a.name || '').localeCompare(String(b.name || ''), 'th');
@@ -62,6 +63,7 @@ export const createProject = async ({ name, code = '', description = '' }, creat
     code: String(code).trim(),
     description: String(description).trim(),
     archived: false,
+    status: 'Active',
     createdAt: now,
     updatedAt: now,
     createdBy: creator?.email || '',
@@ -78,48 +80,54 @@ export const updateProject = (projectId, changes) => updateDoc(projectDocRef(pro
 // Archiving hides a project without deleting its data.
 export const archiveProject = (projectId) => updateProject(projectId, { archived: true });
 
-const chunks = (items, size) => {
-  const result = [];
-  for (let index = 0; index < items.length; index += size) result.push(items.slice(index, index + size));
-  return result;
+// ----------------------------------------------------- from rates (Refresh) -----
+
+const nameKey = (name) => String(name || '').trim().replace(/\s+/g, ' ').toLowerCase();
+
+// Stable id so the same project name always maps to the same document.
+const projectIdForName = (name) => {
+  let hash = 2166136261;
+  for (const char of nameKey(name)) hash = Math.imul(hash ^ char.codePointAt(0), 16777619) >>> 0;
+  return `rates-${hash.toString(16).padStart(8, '0')}`;
 };
 
-const LEGACY_COLLECTIONS = ['rates', 'payroll', 'settings', 'payrollPeriods'];
+// The rates `project` field is a list joined with ", " (see syncMasterEmployees).
+const uniqueRateProjectNames = (rateRows) => {
+  const names = new Map();
+  rateRows.forEach((row) => String(row.project || '').split(/\s*,\s*/).forEach((part) => {
+    const name = part.trim().replace(/\s+/g, ' ');
+    if (name && !names.has(nameKey(name))) names.set(nameKey(name), name);
+  }));
+  return [...names.values()];
+};
 
-// One-off helper: copies the data that was stored before projects existed
-// (`CMG-Payroll/root/{rates,payroll,settings,payrollPeriods}`) into a project.
-// It only copies; the original documents stay untouched.
-export const importLegacyDataIntoProject = async (projectId) => {
-  const target = (name) => collection(projectDocRef(projectId), name);
-  const existing = await getDocs(query(target('rates'), limit(1)));
-  if (!existing.empty) {
-    const error = new Error('โครงการนี้มีข้อมูลอยู่แล้ว');
-    error.code = 'target-not-empty';
-    throw error;
-  }
+// Names present in the rates but not yet stored as a project.
+export const pendingProjectNames = (rateRows, projects) => {
+  const known = new Set(projects.map((project) => nameKey(project.name)));
+  return uniqueRateProjectNames(rateRows).filter((name) => !known.has(nameKey(name)));
+};
 
-  const entries = [];
-  const legacyRoot = (name) => collection(db, APP_NAME, 'root', name);
-  for (const name of LEGACY_COLLECTIONS) {
-    const snapshot = await getDocs(legacyRoot(name));
-    for (const item of snapshot.docs) {
-      const targetRef = doc(target(name), item.id);
-      entries.push([targetRef, item.data()]);
-      if (name !== 'payrollPeriods') continue;
-      const revisions = await getDocs(collection(item.ref, 'revisions'));
-      for (const revision of revisions.docs) {
-        const revisionTarget = doc(collection(targetRef, 'revisions'), revision.id);
-        entries.push([revisionTarget, revision.data()]);
-        const rows = await getDocs(collection(revision.ref, 'rows'));
-        rows.docs.forEach((row) => entries.push([doc(collection(revisionTarget, 'rows'), row.id), row.data()]));
-      }
-    }
-  }
-
-  for (const batchEntries of chunks(entries, 400)) {
+// Only ever adds: existing projects (even ones no employee uses any more) are
+// never changed or deleted. Returns how many were added.
+export const addProjectsFromRates = async (rateRows, creator) => {
+  // Read every stored project (including archived ones) so none is re-added.
+  const stored = (await getDocs(projectsCollection())).docs.map(toProject);
+  const names = pendingProjectNames(rateRows, stored);
+  const now = Timestamp.now();
+  for (let start = 0; start < names.length; start += 400) {
     const batch = writeBatch(db);
-    batchEntries.forEach(([ref, data]) => batch.set(ref, data));
+    names.slice(start, start + 400).forEach((name) => batch.set(projectDocRef(projectIdForName(name)), {
+      name,
+      code: '',
+      description: '',
+      archived: false,
+      status: 'Active',
+      source: 'rates',
+      createdAt: now,
+      updatedAt: now,
+      createdBy: creator?.email || '',
+    }));
     await batch.commit();
   }
-  return entries.length;
+  return names.length;
 };

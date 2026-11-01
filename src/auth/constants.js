@@ -44,9 +44,10 @@ export const STATUS_LABELS = { pending: 'รออนุมัติ', approved:
 export const MODULE_ROLES = {
   overview: null,
   projects: null,
-  rates: ['RateAdmin'],
-  payroll: ['PayrollAdmin'],
+  rates: [], // MasterAdmin only
+  payroll: [], // MasterAdmin only
   adminWage: ['WageEntry'],
+  shifts: [], // MasterAdmin only (shift profiles are stored under the project, which only MasterAdmin may write)
   users: [],
 };
 
