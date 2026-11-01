@@ -236,6 +236,20 @@ body {
 .editor-modal { background: rgba(255, 255, 255, .9); border-color: rgba(255, 255, 255, .9); border-radius: 24px; box-shadow: 0 30px 70px rgba(14, 60, 120, .22); }
 .modal-header { background: var(--ocean-gradient-soft); }
 .close-button { border-radius: 50%; background: rgba(31, 107, 240, .08); color: var(--ocean-blue); }
+/* Payroll period modal: roomier, and the date-picker calendar is never clipped */
+.period-modal { width: min(780px, 100%); max-height: none; overflow: visible; }
+.period-modal .modal-header { padding: 28px 32px 22px; border-radius: 24px 24px 0 0; }
+.period-modal .modal-header h2 { font-size: 26px; }
+.period-modal-subtitle { max-width: 600px; font-size: 13px; }
+.period-modal-content { gap: 18px; min-height: 420px; padding: 28px 32px; align-content: start; }
+.period-modal .period-date-fields { gap: 18px !important; }
+.period-modal .period-name-field > span { font-size: 13px; }
+.period-modal .period-date-trigger { padding: 15px 18px !important; font-size: 15px !important; border-color: rgba(31, 107, 240, .16) !important; }
+.period-modal .period-name-field [role="dialog"] { width: 100% !important; min-width: 300px; padding: 16px !important; border-color: rgba(31, 107, 240, .14) !important; border-radius: 18px !important; box-shadow: 0 18px 40px rgba(14, 60, 120, .2) !important; }
+.period-modal .period-modal-info { padding: 14px 16px; }
+.period-modal .modal-footer { padding: 18px 32px 26px; border-radius: 0 0 24px 24px; }
+.period-modal .modal-footer button { min-width: 120px; padding: 11px 22px; font-size: 13px; }
+
 .toast { border-radius: 14px; border-color: rgba(255, 255, 255, .9); box-shadow: 0 14px 30px rgba(24, 92, 160, .2); }
 
 /* Auth: blue/mint blob behind a frosted card */
@@ -347,6 +361,12 @@ body {
   .import-summary-cards { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .import-summary-content { padding: 14px 16px; }
   .special-position-form { grid-template-columns: minmax(0, 1fr); }
+  .period-modal { max-height: 92vh; overflow: auto; }
+  .period-modal .modal-header, .period-modal-content { padding: 18px 16px; }
+  .period-modal-content { min-height: 0; }
+  .period-modal .period-date-fields { grid-template-columns: minmax(0, 1fr) !important; }
+  .period-modal .period-name-field [role="dialog"] { position: static !important; min-width: 0; margin-top: 6px; box-shadow: none !important; }
+  .period-modal .modal-footer { padding: 12px 16px 16px; }
   .toast { left: 12px; right: 12px; bottom: 12px; }
 }
 
